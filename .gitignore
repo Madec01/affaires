@@ -1,0 +1,20 @@
+# Données de travail et sauvegardes
+Repere_sauvegarde_*.json
+[Rr]epere*sauvegarde*.json
+backups/
+sauvegardes/
+data/
+*.eml
+
+# Identifiants et configurations privées
+.env
+.env.*
+!.env.example
+*service-account*.json
+*firebase-adminsdk*.json
+
+# Fichiers locaux et dépendances
+.DS_Store
+Thumbs.db
+node_modules/
+*.log
