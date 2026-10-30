@@ -2,9 +2,15 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="description" content="Repère — Votre espace local pour suivre vos affaires, vos actions et vos notes.">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://www.gstatic.com; style-src 'unsafe-inline'; img-src data: blob:; connect-src https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firestore.googleapis.com https://firebaseinstallations.googleapis.com https://www.googleapis.com https://repere-affaires.firebaseapp.com; frame-src https://repere-affaires.firebaseapp.com; font-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://www.gstatic.com; style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://www.gstatic.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firestore.googleapis.com https://firebaseinstallations.googleapis.com https://www.googleapis.com https://repere-affaires.firebaseapp.com; frame-src https://repere-affaires.firebaseapp.com; worker-src 'self'; manifest-src 'self'; font-src 'none'; base-uri 'none'; form-action 'none'">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./assets/icon-192.png">
+<link rel="icon" href="./assets/icon-192.png" type="image/png">
+<meta name="theme-color" content="#174e48">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>Repère · Mes affaires</title>
 <style>
 /* Existing layout and dedicated synthesis/print rules; visual app styles are centralized. */
@@ -1388,6 +1394,7 @@ mark{background:var(--amber-soft);color:var(--amber)}.block table td,.block tabl
 @media print{.v123-backup-status{display:none!important}}
 
 /*CLOUD_CSS*/
+/*MOBILE_CSS*/
 </style>
 </head>
 <body data-cloud-locked>
@@ -1396,6 +1403,7 @@ mark{background:var(--amber-soft);color:var(--amber)}.block table td,.block tabl
 <button type="button" id="sidebar-backdrop" data-act="close-navigation" aria-label="Fermer la navigation" hidden></button>
 <aside id="sidebar" aria-label="Navigation principale"></aside>
 <main id="main"><div id="save-banner" class="hidden"></div><header id="topbar"></header><section id="content"></section></main>
+<nav id="mobile-nav" aria-label="Navigation téléphone"></nav>
 <div id="modal-root"></div><div id="slash-root"></div><div id="toast-root" aria-live="polite"></div>
 <input id="import-file" class="hidden" type="file" accept=".json,application/json">
 <script>/*APP_SCRIPT*/</script>

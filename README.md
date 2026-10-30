@@ -1,8 +1,8 @@
 # Repère — gestion des affaires
 
-**Version 1.26** · schéma des sauvegardes **13**.
+**Version 1.27** · schéma des sauvegardes **13**.
 
-Repère suit les affaires, projets TR1/TR2 et TEM/AT, actions, demandes hors affaire, interlocuteurs, éléments, références et notes. Les synthèses restent imprimables en PDF et exportables en brouillon e-mail. L’adaptation complète à l’écran et aux fonctionnalités du téléphone constitue l’étape suivante.
+Repère suit les affaires, projets TR1/TR2 et TEM/AT, actions, demandes hors affaire, interlocuteurs, éléments, références et notes. Les synthèses restent imprimables en PDF et exportables en brouillon e-mail. Sur téléphone (jusqu’à 700 px), une interface dédiée place la todo liste au premier plan ; la présentation PC reste disponible sur écran large.
 
 ## Deux modes
 
@@ -10,6 +10,32 @@ Repère suit les affaires, projets TR1/TR2 et TEM/AT, actions, demandes hors aff
 - **Fichier local** : ouvrir directement `Repere_Affaires_V1.html` conserve le fonctionnement local, sans charger Firebase. Exporter un JSON depuis ce mode pour reprendre ses données dans la version Web.
 
 Le fichier HTML reste autonome pour le mode local. La version connectée charge les SDK officiels Firebase Authentication et Firestore (13.1.0) depuis le CDN Google. Elle requiert un accès réseau pour sa première ouverture et la connexion. Aucun mot de passe ni clé de compte de service n’est inclus dans le dépôt.
+
+## Téléphone — version 1.27
+
+- **Aujourd’hui** : actions d’affaires et demandes hors affaire, classées en priorités, relances, échéances du jour, suite et réponses attendues. L’affaire est affichée avant l’action. Les filtres sont regroupés dans un bouton.
+- **Toutes** : actions ouvertes, en attente ou terminées ; filtres par affaire, tranche, TEM/AT, urgence et recherche.
+- **Affaires** : liste compacte ; ouverture sur les actions du projet sélectionné, puis onglets Dossier / Notes. Références MC, OT, ADR, PDS, FEP et régimes filtrées sur le projet, contacts avec liens Appeler / E-mail, SharePoint et Cockpit. Éléments et documents restent accessibles via ⋯.
+- **+** : ajout rapide d’une demande hors affaire, d’une action sur un ou plusieurs projets, ou d’une note à classer. La priorité des demandes conserve les règles existantes. Une durée facultative peut aussi être donnée à une action d’affaire.
+- Un appui sur l’action ouvre sa fiche : terminer/rouvrir, en cours, reporter, en attente, ajouter un suivi, modifier. La case permet de terminer directement, avec **Annuler** dans le message de confirmation.
+- Zones tactiles, champs de 16 px, formulaires défilants et boutons de validation accessibles ; modes clair et sombre. Les commandes `/` et mentions `@` existantes sont conservées. Le dictaphone du clavier du téléphone peut servir à saisir du texte.
+
+### Installation et hors connexion
+
+Ouvrir l’adresse HTTPS, se connecter avec **Rester connecté**, puis ouvrir **⋯ → Installer sur le téléphone**. Sur Android, utiliser le bouton Installer proposé par le navigateur ; sur iPhone, passer par Safari → Partager → Sur l’écran d’accueil. Vérifier le message « Application disponible hors connexion » avant l’essai en mode avion.
+
+Le service worker ne garde que le code public, le manifeste, les icônes et les trois modules SDK officiels. Il n’intercepte ni les appels Firestore/Authentication ni les documents SharePoint. Les données restent dans IndexedDB ; le protocole de synchronisation et son délai de **3 minutes après la dernière modification** sont conservés. Aucun envoi Firebase supplémentaire n’est déclenché par la navigation mobile, l’installation ou le service worker. Le navigateur peut suspendre l’application lorsqu’elle est fermée : les envois en attente reprennent à la prochaine ouverture, sans garantie d’exécution en arrière-plan.
+
+Une mise à jour installable est signalée par **Nouvelle version disponible**. Elle attend le bouton **Mettre à jour l’application**, qui enregistre d’abord les modifications locales. Les formulaires non validés ne sont pas enregistrés automatiquement. Le fichier HTML ouvert directement reste utilisable sans installation. La première ouverture/connexion, une reconnexion après déconnexion et les données encore absentes de l’appareil demandent Internet. Un nettoyage du stockage du navigateur peut supprimer le cache et les données locales.
+
+### Essai téléphone
+
+1. Actualiser la version sur **les deux appareils**, vérifier **v1.27** dans ⋯.
+2. Créer une demande hiérarchique de 3 minutes via **+** : elle doit apparaître en priorité. Ajouter un suivi, terminer puis annuler.
+3. Depuis une affaire, créer une action et cocher deux projets : une seule action, visible dans chacun. Filtrer TR1/TR2 et vérifier les couleurs.
+4. Ouvrir Dossier, changer la tranche/projet, contrôler les références et les contacts ; ouvrir une note et tester `/` et `@`.
+5. Laisser l’application ouverte 3 minutes après la dernière modification et vérifier la réception sur le PC.
+6. Après installation/préparation et synchronisation, activer le mode avion, fermer puis rouvrir Repère, cocher une action. Rétablir le réseau et vérifier sa synchronisation.
 
 ## Configuration Firebase
 
@@ -99,7 +125,7 @@ Les anciennes versions de fragments restent conservées pour éviter de supprime
 - Une copie locale non vide jamais associée demande confirmation avant le premier envoi.
 - Les mises à jour entrantes attendent la sortie du champ ou la validation du formulaire en cours.
 - Si les deux appareils ont changé leur copie, **Conflit à résoudre** propose de conserver la copie locale ou celle de Firebase. Le choix concerne tout l’espace ; aucune fusion automatique des champs n’est annoncée. La version remplacée est conservée dans IndexedDB et exportable depuis le compte.
-- Hors connexion, les changements restent dans IndexedDB et sont repris au retour du réseau. La réouverture complète hors ligne de la version Web n’est pas garantie : il n’y a pas encore de PWA/service worker.
+- Hors connexion, les changements restent dans IndexedDB et sont repris au retour du réseau. La version 1.27 met en cache l’application et les trois modules Firebase nécessaires : après préparation en ligne et connexion persistante, elle peut se rouvrir hors ligne sur le même appareil. Les liens SharePoint/Cockpit demandent leur propre accès réseau.
 - La déconnexion masque les données et garde le cache pour le même compte. Ce cache n’est pas chiffré par Repère : utiliser un profil personnel.
 - Deux onglets partageant le même cache utilisent un verrou pour éviter de synchroniser en parallèle. Si leurs copies de travail divergent, une protection bloque l’écriture de l’onglet périmé : exporter au besoin, puis le recharger.
 
@@ -132,6 +158,8 @@ python3 scripts/build.py
 node --test tests/*.test.cjs
 ```
 
-`src/app.js` et `src/shell.html` contiennent l’application existante. `src/cloud-core.js` contient la décision de synchronisation, la gestion des conflits et le protocole de découpage. `src/cloud-ui.js` contient le compte, les déclenchements et l’intégration avec les données locales. `src/local-db.js` gère IndexedDB, les révisions locales, le verrou entre onglets et le budget. `src/cloud-transport.js` gère les transferts par élément. `tests/indexeddb-browser.js` vérifie le stockage réel dans un navigateur (voir `scripts/prepare-preview.py`).
+`src/app.js` et `src/shell.html` contiennent l’application existante. `src/cloud-core.js` contient la décision de synchronisation, la gestion des conflits et le protocole de découpage. `src/cloud-ui.js` contient le compte, les déclenchements et l’intégration avec les données locales. `src/local-db.js` gère IndexedDB, les révisions locales, le verrou entre onglets et le budget. `src/cloud-transport.js` gère les transferts par élément. `src/mobile.js` et `src/mobile.css` portent les vues téléphone ; `src/pwa.js` et `src/service-worker.js` portent l’installation et le cache public. `sw.js` est généré par le build. `scripts/build-icons.py` reproduit les icônes à partir du tracé natif avec Pillow. `tests/indexeddb-browser.js` vérifie le stockage réel dans un navigateur (voir `scripts/prepare-preview.py`).
 
 Les tests automatisés utilisent des données fictives et un transport simulé. Ils couvrent les conflits, les coupures, les courses entre appareils, les erreurs de stockage, l’isolation de session, les fragments, les sauvegardes et les nombres d’opérations. Un banc de 8 vérifications IndexedDB a également été exécuté dans Chrome, ainsi qu’une création de capture, un enregistrement manuel et un rechargement de l’application. Les tests v1.26 simulent le minuteur de 3 minutes, sa remise à zéro, le bouton manuel, les événements de visibilité/réseau, la conservation du délai au rechargement et deux appareils authentifiés avec réception automatique sans lecture supplémentaire au repos. Ils ne prouvent pas que les réglages de votre console Firebase sont publiés : le test réel ci-dessus reste nécessaire.
+
+Les tests v1.27 couvrent les priorités mobiles, la sélection multiple TR1/TR2, la conservation des durées lors des sauvegardes, les références par projet, les filtres sans modification métier et le cache public du service worker. La vérification visuelle utilise une fenêtre intégrée de 320/390/700 px et une largeur PC de 1200 px, avec données fictives. L’installation native iOS/Android et le rechargement hors ligne avec votre compte doivent être vérifiés sur vos appareils réels ; le serveur local de prévisualisation ne fournit pas HTTPS.
