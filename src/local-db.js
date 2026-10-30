@@ -26,9 +26,9 @@
   const set=(k,v)=>tx('readwrite',(s,done)=>{s.put(v,key(k));done(v)});
   const setMany=rows=>tx('readwrite',s=>{for(const [k,v] of rows)s.put(v,key(k))});
   const update=(k,fn)=>tx('readwrite',(s,done,fail)=>{const q=s.get(key(k));q.onsuccess=()=>{try{const v=fn(q.result??null);s.put(v,key(k));done(v)}catch(e){fail(e)}}});
-  const save=(data,expected,keepPrevious=()=>true)=>update('workspace',old=>{
+  const save=(data,expected,keepPrevious=()=>true,editedAt)=>update('workspace',old=>{
    if((old?.revision||0)!==expected)throw failure('Une autre fenêtre a modifié les données locales. Exportez cette session avant de recharger.','repere/tab');
-   return {data,revision:expected+1,previous:old?.data&&keepPrevious(old.data,data)?old.data:(old?.previous||null),savedAt:Date.now()};
+   return {data,revision:expected+1,previous:old?.data&&keepPrevious(old.data,data)?old.data:(old?.previous||null),savedAt:Date.now(),editedAt:editedAt===undefined?(old?.editedAt||0):editedAt};
   });
   const reserve=(reads,writes,now=Date.now())=>update('budget',old=>budgetNext(old,reads,writes,now));
   const acquire=(owner,manual=false,now=Date.now())=>update('lease',old=>{

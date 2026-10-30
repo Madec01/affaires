@@ -19,6 +19,7 @@
   return m;
  }
  function decide(localHash,base,remote,hasContent){
+  if(base&&remote&&remote.revision<base.revision)return 'conflict';
   if(remote&&remote.hash===localHash)return 'ack';
   if(!base){if(remote)return hasContent?'conflict':'pull';return hasContent?'initial':'empty'}
   if(!remote){if(base.revision>0)return 'conflict';return localHash===base.hash?'empty':'push'}

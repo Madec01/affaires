@@ -2,7 +2,7 @@
 'use strict';
 const CONTEXT_KEYS=['T1_TEM','T1_AT','T2_TEM','T2_AT'];
 const CLOUD_OWNER='uApWq2k3mHNiCymeLpJRA3E0UwJ2', CLOUD_WEB=/^https?:$/.test(location.protocol);
-const VERSION='1.25', STORE=CLOUD_WEB?'repere-affaires-cloud-v1-'+CLOUD_OWNER:'repere-affaires-v1', BACKUP=STORE+'-previous';
+const VERSION='1.26', STORE=CLOUD_WEB?'repere-affaires-cloud-v1-'+CLOUD_OWNER:'repere-affaires-v1', BACKUP=STORE+'-previous';
 /*CLOUD_CORE*/
 /*LOCAL_DB*/
 /*CLOUD_TRANSPORT*/
@@ -1455,12 +1455,13 @@ function setSaveState(){let e=$('#save-state');if(e){e.className='save-status'+(
 function persist(){
  clearTimeout(saveTimer);saveTimer=null;
  if(cloud.locked||!localState.ready||loadError||conflict){setSaveState();return Promise.resolve(false)}
- prepareRecords(db);const snapshot=JSON.parse(JSON.stringify(db)),generation=++localState.generation;snapshot.updatedAt=stamp();dirty=true;setSaveState();
+ prepareRecords(db);const snapshot=JSON.parse(JSON.stringify(db)),generation=++localState.generation,requestedAt=Date.now();snapshot.updatedAt=stamp();dirty=true;setSaveState();
  const operation=localState.chain.then(async()=>{
   if(conflict||loadError)return false;
   try{
-   const saved=await localState.store.save(snapshot,localState.revision,(old,next)=>hasBackupContent(old)&&backupFingerprint(old)!==backupFingerprint(next));
-   localState.revision=saved.revision;lastRaw=JSON.stringify(snapshot);localAnnounce();storageError='';if(generation===localState.generation)dirty=false;cloudChanged();setSaveState();return true;
+   const changed=RepereSync.canonical(snapshot)!==cloud.lastCanonical;
+   const saved=await localState.store.save(snapshot,localState.revision,(old,next)=>hasBackupContent(old)&&backupFingerprint(old)!==backupFingerprint(next),changed?requestedAt:undefined);
+   localState.revision=saved.revision;lastRaw=JSON.stringify(snapshot);localAnnounce();storageError='';if(generation===localState.generation)dirty=false;cloudChanged(snapshot,saved.editedAt||requestedAt);setSaveState();return true;
   }catch(e){if(e.code==='repere/tab')conflict=true;storageError=e.message;dirty=true;setSaveState();return false}
  });localState.chain=operation.catch(()=>{});return operation;
 }

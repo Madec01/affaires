@@ -1,6 +1,6 @@
 # Repère — gestion des affaires
 
-**Version 1.25** · schéma des sauvegardes **13**.
+**Version 1.26** · schéma des sauvegardes **13**.
 
 Repère suit les affaires, projets TR1/TR2 et TEM/AT, actions, demandes hors affaire, interlocuteurs, éléments, références et notes. Les synthèses restent imprimables en PDF et exportables en brouillon e-mail. L’adaptation complète à l’écran et aux fonctionnalités du téléphone constitue l’étape suivante.
 
@@ -65,27 +65,27 @@ Les anciennes données localStorage sont migrées vers IndexedDB à la première
 
 ### Déclenchements
 
-- Après une modification : regroupement pendant **10 secondes après la dernière modification**, avec au plus **un cycle automatique par minute** et par espace dans ce profil de navigateur.
+- Après une modification : **envoi après 3 minutes sans nouvelle modification métier**. Chaque modification relance ces 3 minutes. L’heure du dernier changement est conservée avec les données dans IndexedDB : recharger la page ne remet pas arbitrairement le délai à zéro. Le thème, les réglages d’export et un clic sans modification ne relancent pas le délai.
 - Bouton **✓ Enregistrer maintenant**, dans la barre du haut, ou **Compte → Enregistrer et synchroniser** : enregistrement local puis vérification Firebase. Les clics espacés de moins de 10 secondes sont regroupés.
-- Connexion, retour du réseau ou retour à un onglet visible : vérification limitée par le même délai automatique.
-- Passage en arrière-plan / fermeture : tentative de terminer l’écriture locale ; un envoi réseau est tenté s’il reste du travail et si le délai le permet. **Une fermeture ne garantit jamais la fin d’un envoi réseau** : attendre « Synchronisé » avant de changer d’appareil.
-- **Aucun listener Firestore permanent, aucun polling et aucune lecture périodique au repos.** L’autre appareil doit revenir au premier plan ou utiliser le bouton pour recevoir des changements lorsqu’il reste ouvert sans activité.
+- Connexion, retour du réseau ou retour à un onglet visible : reprise de la réception automatique. Si cet appareil a des modifications en attente, ces événements respectent aussi les 3 minutes d’inactivité avant envoi.
+- Passage en arrière-plan / fermeture : tentative de terminer l’écriture locale ; l’écoute distante est arrêtée et l’envoi restant garde son délai de 3 minutes. Si l’onglet reste ouvert, un minuteur encore actif peut envoyer les changements, mais le navigateur peut le suspendre. **Une fermeture ne garantit jamais la fin d’un envoi réseau** : attendre « Synchronisé » avant de changer d’appareil.
+- **Une seule écoute Firestore sur le document d’index par onglet visible**, sans écoute des collections ni polling périodique. Une notification serveur déclenche la réception automatique sur l’autre appareil. L’index de la notification est réutilisé, seuls les éléments manquants ou modifiés sont téléchargés. L’écoute s’arrête quand l’onglet est masqué, hors connexion ou déconnecté, puis reprend au retour. Les événements rapprochés sont regroupés (au moins 10 secondes entre deux cycles de réception).
 - Changer le thème, plier une section, régler les exports ou exporter un JSON ne déclenche pas un envoi des données métier.
 
 ### Coût des opérations
 
-Une vérification lit un petit index contenant les empreintes des éléments. Le contenu déjà présent dans IndexedDB est réutilisé. Seuls les éléments absents **ou dont la version a changé** sont téléchargés : une présence locale ne suffit pas si l’autre appareil a modifié cet élément.
+Une vérification manuelle lit un petit index contenant les empreintes des éléments. En réception automatique, cet index est déjà fourni par la notification serveur et n’est pas relu. Le contenu déjà présent dans IndexedDB est réutilisé. Seuls les éléments absents **ou dont la version a changé** sont téléchargés : une présence locale ne suffit pas si l’autre appareil a modifié cet élément.
 
 | Scénario testé, sans erreur réseau ni concurrence | Lectures de documents | Écritures de documents |
 | --- | ---: | ---: |
-| Application au repos après synchronisation | 0 | 0 |
+| Application au repos, connexion stable et aucune modification distante | 0 | 0 |
 | Vérification, données locales à jour | 1 index | 0 |
 | Modification du titre d’une action existante | 1 index + 1 contrôle transactionnel | 1 action + 1 index |
-| Réception d’une action modifiée, reste déjà en cache | 1 index + 1 action | 0 |
+| Réception automatique d’une action modifiée, reste déjà en cache | 1 notification d’index + 1 action | 0 |
 
-Une création ou suppression peut aussi modifier l’objet d’ordre des listes. Une note très volumineuse occupe plusieurs fragments. Le premier appareil vide doit nécessairement télécharger les données qu’il ne possède pas.
+L’ouverture ou la reconnexion d’une écoute ajoute une lecture initiale d’index. Les modifications de l’index peuvent aussi notifier l’appareil émetteur ; ces confirmations sont ignorées pour les transferts de contenu. Une création ou suppression peut aussi modifier l’objet d’ordre des listes. Une note très volumineuse occupe plusieurs fragments. Le premier appareil vide doit nécessairement télécharger les données qu’il ne possède pas.
 
-Un garde-fou partagé entre les onglets limite les réservations à **200 lectures et 200 écritures sur une fenêtre glissante de 5 minutes**, **par profil de navigateur et par espace**. Le compteur est lui-même conservé dans IndexedDB et ne repart pas à zéro au rechargement. Il compte deux lectures de précaution pour une transaction, limitée à deux tentatives. Les transferts importants se mettent en pause puis reprennent en utilisant les fragments déjà reçus/envoyés. Les demandes manuelles respectent aussi ce plafond. Les compteurs sont affichés dans le panneau du compte.
+Un garde-fou partagé entre les onglets limite les réservations à **200 lectures et 200 écritures sur une fenêtre glissante de 5 minutes**, **par profil de navigateur et par espace**. Le compteur est lui-même conservé dans IndexedDB et ne repart pas à zéro au rechargement. Il compte deux lectures de précaution pour une transaction, limitée à deux tentatives. Les transferts importants se mettent en pause puis reprennent en utilisant les fragments déjà reçus/envoyés. Les demandes manuelles respectent aussi ce plafond. Les notifications d’index sont comptées et l’écoute est arrêtée si le budget est atteint ; des notifications déjà en transit restent possibles. Les compteurs sont affichés dans le panneau du compte.
 
 Ce garde-fou est propre à Repère, pas une limite serveur du projet : plusieurs appareils additionnent leur consommation ; la console Firebase et les autres clients ne sont pas comptés. Les retransmissions du SDK et l’authentification ne sont pas une mesure exacte de facturation. Consulter **Firestore → Utilisation** pour la consommation réelle.
 
@@ -113,9 +113,9 @@ Firebase propage aussi les suppressions confirmées. Conserver plusieurs exports
 
 ## Vérifications à faire avec le compte réel
 
-1. Sur le PC, créer **TEST SYNCHRO** et une action ; attendre **Synchronisé**.
+1. Sur le PC, créer **TEST SYNCHRO** et une action ; vérifier « Enregistré dans IndexedDB » immédiatement, puis l’heure « Envoi auto à … ». Faire une deuxième modification après 2 minutes : l’envoi doit attendre 3 minutes supplémentaires, sans cliquer sur ✓.
 2. Sur un second appareil, se connecter avec le même compte et vérifier l’affaire, l’action et leurs détails.
-3. Modifier l’action sur le second appareil, attendre « Synchronisé », revenir au premier plan sur le PC ou cliquer sur ✓, puis contrôler le changement.
+3. Modifier l’action sur le second appareil ; sans appuyer sur ✓, attendre 3 minutes après la dernière modification. Laisser Repère visible sur le PC : l’action doit s’y actualiser automatiquement, hors formulaire en cours. Si le PC était en veille, le changement est récupéré à son retour.
 4. Couper le réseau d’un appareil déjà ouvert, modifier une note, puis rétablir le réseau et vérifier l’envoi.
 5. Modifier la même base sur les deux appareils pendant qu’un est hors ligne : au retour, contrôler le conflit et les deux exports avant de choisir.
 6. Se déconnecter : le contenu doit disparaître et les raccourcis de l’application ne doivent pas agir derrière la connexion.
@@ -134,4 +134,4 @@ node --test tests/*.test.cjs
 
 `src/app.js` et `src/shell.html` contiennent l’application existante. `src/cloud-core.js` contient la décision de synchronisation, la gestion des conflits et le protocole de découpage. `src/cloud-ui.js` contient le compte, les déclenchements et l’intégration avec les données locales. `src/local-db.js` gère IndexedDB, les révisions locales, le verrou entre onglets et le budget. `src/cloud-transport.js` gère les transferts par élément. `tests/indexeddb-browser.js` vérifie le stockage réel dans un navigateur (voir `scripts/prepare-preview.py`).
 
-Les tests automatisés utilisent des données fictives et un transport simulé. Ils couvrent les conflits, les coupures, les courses entre appareils, les erreurs de stockage, l’isolation de session, les fragments, les sauvegardes et les nombres d’opérations. Un banc de 8 vérifications IndexedDB a également été exécuté dans Chrome, ainsi qu’une création de capture, un enregistrement manuel et un rechargement de l’application. Ils ne prouvent pas que les réglages de votre console Firebase sont publiés : le test réel ci-dessus reste nécessaire.
+Les tests automatisés utilisent des données fictives et un transport simulé. Ils couvrent les conflits, les coupures, les courses entre appareils, les erreurs de stockage, l’isolation de session, les fragments, les sauvegardes et les nombres d’opérations. Un banc de 8 vérifications IndexedDB a également été exécuté dans Chrome, ainsi qu’une création de capture, un enregistrement manuel et un rechargement de l’application. Les tests v1.26 simulent le minuteur de 3 minutes, sa remise à zéro, le bouton manuel, les événements de visibilité/réseau, la conservation du délai au rechargement et deux appareils authentifiés avec réception automatique sans lecture supplémentaire au repos. Ils ne prouvent pas que les réglages de votre console Firebase sont publiés : le test réel ci-dessus reste nécessaire.

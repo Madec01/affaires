@@ -29,9 +29,12 @@
   const check=()=>{if(!active())throw fail('Session interrompue.','repere/stopped')};
   const reserve=async(r,w)=>{check();await cache.reserve(r,w);check()};
   async function seed(){const bundle=await encode(local());check();await cache.setMany([...bundle.objects].map(([id,text])=>['object:'+id,text]));return bundle}
-  async function read(){
-   await seed();await reserve(1,0);const snapshot=await sdk.getDocFromServer(ref);check();if(!snapshot.exists())return null;
-   const meta=manifest(snapshot.data());
+  async function read(observed=undefined){
+   await seed();
+   // A server notification already contains the manifest: do not fetch it twice.
+   if(observed===undefined){await reserve(1,0);const snapshot=await sdk.getDocFromServer(ref);check();observed=snapshot.exists()?snapshot.data():null}
+   if(observed===null)return null;
+   const meta=manifest(observed);
    const data=await decode(meta,async id=>{
     let text=await cache.get('object:'+id);check();if(text!==null)return text;
     await reserve(1,0);const s=await sdk.getDocFromServer(part(id));check();if(!s.exists()||typeof s.data().text!=='string')throw fail('Copie Firebase incomplète.');text=s.data().text;await cache.set('object:'+id,text);return text;

@@ -1,8 +1,9 @@
 // Firebase client configuration is public. Authorization is enforced by Firestore rules.
 const FIREBASE_CONFIG={apiKey:'AIzaSyCgveMBckBmNXIGBpALlR-Ma0xpawR8Rvo',authDomain:'repere-affaires.firebaseapp.com',projectId:'repere-affaires',storageBucket:'repere-affaires.firebasestorage.app',messagingSenderId:'721521791922',appId:'1:721521791922:web:ec14b05bad4a180d0ecaab'};
+const CLOUD_IDLE_MS=180000;
 const CLOUD_META=STORE+'-sync', CLOUD_URL='https://madec01.github.io/affaires/';
 const localState={store:RepereLocal.create(STORE),ready:false,revision:0,generation:0,chain:Promise.resolve(),channel:null};
-const cloud={sdk:null,auth:null,fire:null,user:null,controller:null,unsubscribe:null,timer:null,locked:true,epoch:0,sdkPromise:null,view:{status:CLOUD_WEB?'loading':'local',pending:false,busy:false},error:'',loading:false,lastCanonical:null,runAt:0,retryCount:0,quota:null,owner:Date.now().toString(36)+Math.random().toString(36).slice(2)};
+const cloud={sdk:null,auth:null,fire:null,user:null,controller:null,unsubscribe:null,timer:null,locked:true,epoch:0,sdkPromise:null,view:{status:CLOUD_WEB?'loading':'local',pending:false,busy:false},error:'',loading:false,lastCanonical:null,lastEditAt:0,retryAt:0,remoteNotice:null,readNotice:null,transport:null,watchEpoch:0,watchStarting:false,runAt:0,retryCount:0,quota:null,owner:Date.now().toString(36)+Math.random().toString(36).slice(2)};
 function cloudError(e){
  const code=String(e?.code||'').replace(/^firestore\//,'');
  return ({'auth/invalid-credential':'Adresse e-mail ou mot de passe incorrect.','auth/invalid-login-credentials':'Adresse e-mail ou mot de passe incorrect.','auth/wrong-password':'Adresse e-mail ou mot de passe incorrect.','auth/user-not-found':'Adresse e-mail ou mot de passe incorrect.','auth/invalid-email':'Vérifiez le format de l’adresse e-mail.','auth/user-disabled':'Ce compte a été désactivé dans Firebase.','auth/too-many-requests':'Trop de tentatives. Patientez avant de réessayer.','auth/network-request-failed':'Firebase est inaccessible. Vérifiez votre connexion et les restrictions du réseau.','auth/operation-not-allowed':'Activez Adresse e-mail/Mot de passe dans Firebase Authentication.','auth/unauthorized-domain':'Ajoutez madec01.github.io dans les domaines autorisés de Firebase Authentication.','permission-denied':'Accès Firestore refusé. Vérifiez que les règles publiées contiennent votre UID et le chemin users/{userId}.','resource-exhausted':'Quota Firebase atteint. Vos modifications restent sur cet appareil ; réessayez plus tard.','unavailable':'Connexion à Firebase indisponible. Vos modifications restent sur cet appareil.','repere/owner':'Ce compte n’est pas autorisé pour cet espace Repère.','repere/local':'Enregistrement local impossible. Exportez vos données avant de continuer.'})[code]||e?.message||'La connexion n’a pas abouti. Réessayez.';
@@ -21,6 +22,7 @@ function cloudLabel(){
  if(!CLOUD_WEB)return 'Mode local';
  if(!cloud.user)return 'Connexion';
  if(!navigator.onLine)return 'Hors connexion';
+ if(cloud.view.status==='pending'&&cloud.lastEditAt&&Date.now()<cloud.lastEditAt+CLOUD_IDLE_MS)return 'Envoi auto à '+new Date(cloud.lastEditAt+CLOUD_IDLE_MS).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
  return ({loading:'Connexion…',syncing:'Synchronisation…',synced:'Synchronisé',pending:'En attente',offline:'Hors connexion',error:'Erreur de synchro',conflict:'Conflit à résoudre',initial:'Premier envoi',remote:'Mise à jour disponible',blocked:'Sauvegarde à vérifier',paused:'Synchro en pause'})[cloud.view.status]||'Connexion';
 }
 function cloudTopButton(){return '<button type="button" class="btn small" data-cloud="retry" title="Enregistrer localement et synchroniser" aria-label="Enregistrer maintenant">'+ic('check',16)+'</button><button type="button" class="btn small cloud-status" data-cloud="account" title="Compte et synchronisation" aria-label="Compte · '+esc(cloudLabel())+'"><span class="cloud-dot" data-state="'+esc(cloud.view.status)+'"></span><span data-cloud-label>'+esc(cloudLabel())+'</span></button>'}
@@ -34,7 +36,7 @@ function cloudDetails(){
   html+='<p>'+(v.status==='initial'?'Cette copie locale n’a jamais été associée à Firebase. Choisissez explicitement de l’envoyer.':'Les deux copies ont changé. Aucune version n’est écrasée automatiquement. Le choix porte sur tout l’espace de travail.')+'</p><div class="cloud-versions"><div><strong>Sur cet appareil</strong><p>'+esc(cloudCounts(db))+'</p><button type="button" class="btn small" data-cloud="export-local">Exporter cette copie</button></div><div><strong>Sur Firebase</strong><p>'+esc(cloudCounts(v.remote?.data))+'</p>'+(v.remote?'<button type="button" class="btn small" data-cloud="export-remote">Exporter cette copie</button>':'')+'</div></div><div class="flex wrap"><button type="button" class="btn primary" data-cloud="choose-local">'+(v.status==='initial'?'Envoyer cette copie':'Conserver ma version locale')+'</button>'+(v.remote?'<button type="button" class="btn" data-cloud="choose-remote">Reprendre la version Firebase</button>':'')+'</div><p class="form-hint">Une copie de la version remplacée sera conservée sur cet appareil. Vous pourrez l’exporter ci-dessous.</p>';
  }else if(v.status==='remote')html+='<p>Terminez le formulaire ou quittez le champ en cours pour recevoir la mise à jour.</p>';
  else if(v.status==='offline')html+='<p>Les modifications enregistrées restent sur cet appareil. La synchronisation reprendra au retour du réseau, tant que la page est ouverte.</p>';
- else html+='<p>Les modifications sont enregistrées dans IndexedDB, puis regroupées pour Firebase : 10 secondes après la dernière modification, au plus un cycle automatique par minute. Aucun contrôle périodique au repos. Les formulaires non validés ne sont pas enregistrés.</p>';
+ else html+='<p>Les modifications sont enregistrées dans IndexedDB, puis regroupées pour Firebase : 3 minutes après la dernière modification. Toute nouvelle modification relance ce délai. Les autres appareils ouverts reçoivent automatiquement les changements via l’index des versions. Les formulaires non validés ne sont pas enregistrés.</p>';
  html+='<div class="flex wrap"><button type="button" class="btn small" data-cloud="retry">Enregistrer et synchroniser</button><button type="button" class="btn small" data-cloud="signout">Se déconnecter</button></div><details class="cloud-recovery"><summary>Reprise et copies de sécurité</summary><div class="stack"><button type="button" class="btn small" data-cloud="legacy">Reprendre les anciennes données de ce navigateur</button><button type="button" class="btn small" data-cloud="saved-local">Exporter la copie locale remplacée</button><button type="button" class="btn small" data-cloud="saved-remote">Exporter la copie Firebase remplacée</button><p class="form-hint">Les exports automatiques restent disponibles dans Réglages. La synchronisation ne remplace pas une sauvegarde datée.</p></div></details>';
  html+='<p class="form-hint">Limite par appareil : 200 lectures et 200 écritures estimées sur 5 minutes. La fermeture conserve en priorité la copie locale ; attendez « Synchronisé » pour garantir l’envoi.</p>';
  if(cloud.quota){const q=RepereLocal.budgetNext(cloud.quota,0,0);html+='<p class="form-hint">Réservées sur les 5 dernières minutes : '+q.reads+' lectures · '+q.writes+' écritures. Compteurs de précaution, hors connexions et console Firebase.</p>'}
@@ -48,31 +50,82 @@ function cloudRefresh(){
  for(const n of document.querySelectorAll('.cloud-status'))n.setAttribute('aria-label','Compte · '+cloudLabel());
 }
 function cloudAccount(){modal('Compte et synchronisation',CLOUD_WEB?'Vos affaires sont rattachées à votre compte personnel.':'Fichier local',dialogBody('<div class="stack" data-cloud-account data-cloud-details>'+cloudDetails()+'</div>','<div class="form-actions">'+btn('Fermer','close-modal','close')+'</div>'))}
-function cloudSchedule(delay=10000){
+function cloudSameVersion(meta,base=cloud.view.base){return !!base&&(meta?.revision||0)===base.revision&&(meta?.hash||'')===base.hash}
+function cloudObsoleteVersion(meta,base=cloud.view.base){return cloudSameVersion(meta,base)||!!(meta&&base&&meta.revision<base.revision)}
+function cloudSchedule(delay=1000){
  if(!CLOUD_WEB||!cloud.user||cloud.locked||!cloud.controller)return;
  if(['error','conflict','initial'].includes(cloud.view.status))return;
- clearTimeout(cloud.timer);const wait=Math.max(delay,60000-(Date.now()-cloud.runAt));cloud.timer=setTimeout(()=>cloudRun(false),wait);
+ const now=Date.now();
+ if(cloud.view.status==='paused'&&delay>1000)cloud.retryAt=Math.max(cloud.retryAt,now+delay);
+ const idleDue=cloud.lastEditAt?cloud.lastEditAt+CLOUD_IDLE_MS:0;
+ const spacing=cloud.remoteNotice?10000:60000;
+ const due=Math.max(now+delay,idleDue,cloud.runAt+spacing,cloud.retryAt);
+ clearTimeout(cloud.timer);cloud.timer=setTimeout(()=>cloudRun(false),Math.max(0,due-now));
+}
+function cloudWatchStop(){cloud.watchEpoch++;cloud.unsubscribe?.();cloud.unsubscribe=null;cloud.watchStarting=false}
+async function cloudWatchStart(){
+ if(!CLOUD_WEB||!cloud.user||cloud.locked||!cloud.transport||cloud.unsubscribe||cloud.watchStarting||!navigator.onLine||document.visibilityState==='hidden'||conflict||loadError||storageError||['error','paused'].includes(cloud.view.status))return;
+ const token=++cloud.watchEpoch,epoch=cloud.epoch;cloud.watchStarting=true;
+ const active=()=>token===cloud.watchEpoch&&epoch===cloud.epoch&&!cloud.locked&&document.visibilityState!=='hidden';
+ let first=true,lastSignature='',fromServer=false,serial=Promise.resolve();
+ function failed(e){
+  if(!active())return;cloudWatchStop();
+  cloud.view={...cloud.view,status:e.code==='repere/budget'?'paused':'error',pending:true,error:cloudError(e)};
+  if(e.code==='repere/budget'){cloud.retryAt=e.retryAt;cloudSchedule(Math.max(1000,e.retryAt-Date.now()))}
+  cloudRefresh();
+ }
+ try{
+  // Reserve the initial document read before opening the listener.
+  cloud.quota=await localState.store.reserve(1,0);if(!active())return;
+  const unsubscribe=cloud.sdk.onSnapshot(cloud.transport.root,{includeMetadataChanges:true},snapshot=>{
+   if(!active())return;
+   if(snapshot.metadata.fromCache){fromServer=false;return}
+   if(snapshot.metadata.hasPendingWrites)return;
+   let meta;try{meta=snapshot.exists()?RepereTransport.manifest(snapshot.data()):null}catch(e){failed(e);return}
+   const signature=JSON.stringify([meta?.revision||0,meta?.hash||'']);
+   if(fromServer&&signature===lastSignature)return;
+   fromServer=true;lastSignature=signature;const prepaid=first;first=false;
+   serial=serial.then(async()=>{
+    if(!active())return;
+    if(!prepaid)cloud.quota=await localState.store.reserve(1,0);
+    if(!active())return;
+    if(cloudObsoleteVersion(meta))return; // Includes our own confirmed commit.
+    cloud.remoteNotice={meta};cloudSchedule(0);cloudRefresh();
+   }).catch(failed);
+  },failed);
+  if(active())cloud.unsubscribe=unsubscribe;else unsubscribe();
+ }catch(e){failed(e)}finally{if(token===cloud.watchEpoch)cloud.watchStarting=false}
 }
 async function cloudRun(manual=false,direction=null,observed=null){
  if(!cloud.controller||cloud.locked||cloud.view.busy)return false;
  clearTimeout(cloud.timer);cloud.timer=null;
  if(dirty&&!await persist())return false;
+ // No automatic event (visibility, notification, reconnect) bypasses the inactivity delay.
+ if(!manual&&((cloud.lastEditAt&&Date.now()<cloud.lastEditAt+CLOUD_IDLE_MS)||Date.now()<cloud.retryAt)){cloudSchedule(0);return false}
  if(!navigator.onLine){cloud.view={...cloud.view,status:'offline'};cloudRefresh();return false}
  let acquired=false,heartbeat;
  try{
-  await localState.store.acquire(cloud.owner,manual);acquired=true;cloud.runAt=Date.now();
+  await localState.store.acquire(cloud.owner,manual||!!cloud.remoteNotice);acquired=true;cloud.runAt=Date.now();
+  cloud.readNotice=manual?null:cloud.remoteNotice;cloud.remoteNotice=null;
   heartbeat=setInterval(()=>localState.store.renew(cloud.owner).catch(()=>{}),30000);
   return direction?await cloud.controller.resolve(direction,observed):await cloud.controller.run();
  }catch(e){
-  if(e.code==='repere/cooldown'){if(cloud.view.pending)cloudSchedule(Math.max(10000,e.retryAt-Date.now()));if(manual)toast('Demande regroupée avec la précédente. Patientez quelques secondes.');return false}
-  if(e.code==='repere/busy'){if(manual)toast(e.message);return false}
+  if(e.code==='repere/cooldown'){if(cloud.view.pending||cloud.remoteNotice)cloudSchedule(Math.max(1000,e.retryAt-Date.now()));if(manual)toast('Demande regroupée avec la précédente. Patientez quelques secondes.');return false}
+  if(e.code==='repere/busy'){if(cloud.view.pending||cloud.remoteNotice)cloudSchedule(10000);if(manual)toast(e.message);return false}
   cloud.view={...cloud.view,status:'error',error:cloudError(e)};cloudRefresh();return false;
- }finally{clearInterval(heartbeat);try{if(acquired)await localState.store.release(cloud.owner);cloud.quota=await localState.store.get('budget')}catch(e){storageError=e.message;setSaveState()}cloudRefresh()}
+ }finally{
+  clearInterval(heartbeat);cloud.readNotice=null;
+  try{if(acquired)await localState.store.release(cloud.owner);cloud.quota=await localState.store.get('budget')}catch(e){storageError=e.message;setSaveState()}
+  if(cloud.remoteNotice&&cloudObsoleteVersion(cloud.remoteNotice.meta))cloud.remoteNotice=null;
+  if(!cloud.remoteNotice&&cloud.view.status==='synced'&&!cloud.lastEditAt){clearTimeout(cloud.timer);cloud.timer=null}
+  if(cloud.remoteNotice)cloudSchedule(0);
+  if(!['paused','error'].includes(cloud.view.status))cloudWatchStart();cloudRefresh();
+ }
 }
 async function localLoad(){
  let saved=await localState.store.get('workspace');
  if(!saved){const legacy=localStorage.getItem(STORE);if(legacy){const data=validateDB(JSON.parse(legacy));saved=await localState.store.save(data,0);const previous=localStorage.getItem(BACKUP);if(previous)await localState.store.update('workspace',row=>({...row,previous:validateDB(JSON.parse(previous))}))}}
- localState.revision=saved?.revision||0;db=saved?validateDB(saved.data):emptyDB();lastRaw=JSON.stringify(db);localState.ready=true;dirty=false;cloud.lastCanonical=RepereSync.canonical(db);
+ localState.revision=saved?.revision||0;db=saved?validateDB(saved.data):emptyDB();lastRaw=JSON.stringify(db);localState.ready=true;dirty=false;cloud.lastCanonical=RepereSync.canonical(db);cloud.lastEditAt=Math.min(Number(saved?.editedAt)||0,Date.now());
  if(!localState.channel&&typeof BroadcastChannel!=='undefined'){
   localState.channel=new BroadcastChannel(STORE);
   localState.channel.onmessage=e=>{if(!cloud.locked&&e.data.revision!==localState.revision){conflict=true;setSaveState()}};
@@ -80,7 +133,7 @@ async function localLoad(){
 }
 function localAnnounce(){localState.channel?.postMessage({revision:localState.revision})}
 
-function cloudChanged(){const raw=RepereSync.canonical(db);if(raw===cloud.lastCanonical)return;cloud.lastCanonical=raw;if(CLOUD_WEB&&cloud.user&&!cloud.locked)cloud.controller?.changed()}
+function cloudChanged(saved=db,editedAt=Date.now()){const raw=RepereSync.canonical(saved);if(raw===cloud.lastCanonical)return;cloud.lastCanonical=raw;cloud.lastEditAt=Math.max(cloud.lastEditAt,editedAt);if(CLOUD_WEB&&cloud.user&&!cloud.locked)cloud.controller?.changed()}
 function cloudHasPending(){return CLOUD_WEB&&!!cloud.user&&!!cloud.view.pending}
 function cloudEditing(){return !!document.querySelector('#modal-root .modal:not(:has([data-cloud-account]))')||!!document.activeElement?.matches('input:not([type="checkbox"]):not([type="file"]),textarea,[contenteditable="true"]')||!!slash}
 function cloudResetUI(){ui={...ui,view:'home',projectId:'',pageId:'',tab:'summary',navHistory:[],navCurrent:null,mobileNavOpen:false};undoSnapshot=null;savedRange=null;lastEditable=null;modalStack=[];modalSubmit=null;document.getElementById('modal-root').replaceChildren();document.getElementById('slash-root').replaceChildren();document.getElementById('toast-root').replaceChildren();slash=null}
@@ -109,7 +162,7 @@ async function cloudSDK(){
 function cloudTransport(sdk,fire,userId){const epoch=cloud.epoch;return RepereTransport.create({sdk,fire,userId,cache:localState.store,local:()=>db,valid:validateDB,active:()=>epoch===cloud.epoch&&!cloud.locked})}
 async function cloudAuthChanged(user){
  if(cloud.user&&dirty&&!cloud.locked&&!await persist())cloud.unsaved=JSON.stringify(db);
- const epoch=++cloud.epoch;clearTimeout(cloud.timer);cloud.unsubscribe?.();cloud.unsubscribe=null;cloud.controller?.stop();cloud.controller=null;
+ const epoch=++cloud.epoch;clearTimeout(cloud.timer);cloudWatchStop();cloud.controller?.stop();cloud.controller=null;cloud.transport=null;cloud.remoteNotice=null;cloud.readNotice=null;cloud.retryAt=0;
  cloudSetLocked(true);
  if(!user||user.uid!==CLOUD_OWNER){
   cloud.user=null;cloud.view={status:'loading',pending:false,busy:false};
@@ -121,19 +174,23 @@ async function cloudAuthChanged(user){
  try{await localLoad();if(cloud.unsaved){db=validateDB(JSON.parse(cloud.unsaved));dirty=true;cloudSetLocked(false);if(await persist())cloud.unsaved=null;cloudSetLocked(true)}}catch(e){db=emptyDB();loadError='La copie IndexedDB ne peut pas être lue. Elle est conservée. Exportez ou restaurez une sauvegarde depuis Réglages.';storageError=e.message}
  if(epoch!==cloud.epoch)return;
  exportState=readExportState();cloudResetUI();cloudSetLocked(false);render();
- const transport=cloudTransport(cloud.sdk,cloud.fire,user.uid);
+ const transport=cloudTransport(cloud.sdk,cloud.fire,user.uid);cloud.transport=transport;
+ const base=await cloudReadMeta();
+ if(base?.hash===await RepereSync.digest(RepereSync.canonical(db)))cloud.lastEditAt=0;
+ if(epoch!==cloud.epoch)return;
  cloud.controller=RepereSync.createController({
-  base:await cloudReadMeta(),local:()=>db,hasContent:hasBackupContent,online:()=>navigator.onLine,
+  base,local:()=>db,hasContent:hasBackupContent,online:()=>navigator.onLine,
   blocked:()=>!!(dirty||loadError||storageError||conflict||cloud.locked),editing:cloudEditing,
-  read:()=>transport.read(),write:(p,e)=>transport.write(p,e),apply:cloudApply,preserve:cloudPreserve,
+  read:()=>transport.read(cloud.readNotice?cloud.readNotice.meta:undefined),write:(p,e)=>transport.write(p,e),apply:cloudApply,preserve:cloudPreserve,
   saveMeta:meta=>localState.store.set('sync',meta),schedule:cloudSchedule,errorText:cloudError,
   onState:v=>{
    if(epoch!==cloud.epoch)return;cloud.view=v;cloudRefresh();
-   if(!v.busy&&v.status==='synced')cloud.retryCount=0;
+   if(!v.busy&&v.status==='synced'){cloud.retryCount=0;cloud.retryAt=0;if(!dirty)cloud.lastEditAt=0}
+   if(v.status==='paused'||v.status==='error')cloudWatchStop();
    if(!v.busy&&v.status==='offline'&&navigator.onLine&&cloud.retryCount<3)cloudSchedule(60000*2**cloud.retryCount++);
   }
  });
- await cloudRun(false);
+ await cloudWatchStart();cloudSchedule(0);
 }
 async function cloudInit(){
  if(!CLOUD_WEB){try{await localLoad()}catch(e){loadError='Impossible d’ouvrir IndexedDB. Les données existantes sont conservées.';storageError=e.message}cloudSetLocked(false);render();return}
@@ -205,10 +262,10 @@ for(const type of ['click','keydown','input','change','submit','focusin','focuso
  if(cloud.locked){e.stopImmediatePropagation();return}
  if(type==='click'){const b=e.target.closest?.('[data-cloud]');if(b){e.preventDefault();e.stopImmediatePropagation();cloudAction(b.dataset.cloud)}}
 });
-window.addEventListener('online',()=>cloudSchedule());
-window.addEventListener('offline',()=>{if(cloud.user){cloud.view={...cloud.view,status:'offline'};cloudRefresh()}});
-window.addEventListener('pageshow',()=>{if(cloud.auth&&!cloud.auth.currentUser&&CLOUD_WEB)cloudSetLocked(true)});
+window.addEventListener('online',()=>{cloudWatchStart();cloudSchedule(0)});
+window.addEventListener('offline',()=>{cloudWatchStop();if(cloud.user){cloud.view={...cloud.view,status:'offline'};cloudRefresh()}});
+window.addEventListener('pageshow',()=>{if(cloud.auth&&!cloud.auth.currentUser&&CLOUD_WEB)cloudSetLocked(true);else if(cloud.user){cloudWatchStart();cloudSchedule(0)}});
 
-document.addEventListener('visibilitychange',()=>{if(cloud.locked)return;if(document.visibilityState==='hidden'){persist().then(ok=>{if(ok&&cloud.view.pending)cloudRun(false)})}else if(cloud.user)cloudSchedule()});
-window.addEventListener('pagehide',()=>{if(!cloud.locked&&dirty)persist()});
+document.addEventListener('visibilitychange',()=>{if(cloud.locked)return;if(document.visibilityState==='hidden'){cloudWatchStop();persist().then(ok=>{if(ok&&cloud.view.pending)cloudSchedule(0)})}else if(cloud.user){cloudWatchStart();cloudSchedule(0)}});
+window.addEventListener('pagehide',()=>{cloudWatchStop();if(!cloud.locked&&dirty)persist()});
 document.addEventListener('focusout',()=>{if(cloud.view.status==='remote')cloudSchedule()});
