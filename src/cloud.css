@@ -1,0 +1,13 @@
+/* Account controls reuse the application's light/dark theme. */
+body[data-cloud-locked] #sidebar,body[data-cloud-locked] #main,body[data-cloud-locked] #modal-root,body[data-cloud-locked] #slash-root,body[data-cloud-locked] #toast-root,body[data-cloud-locked] #sidebar-backdrop{display:none!important}
+#cloud-gate{position:fixed;inset:0;z-index:10000;overflow:auto;display:grid;place-items:center;background:var(--bg,#f2f4f7);color:var(--text,#172536);padding:28px 16px}
+#cloud-gate[hidden]{display:none}
+.cloud-login{width:min(440px,100%);padding:32px;border:1px solid var(--border,#d9e1e8);border-radius:18px;background:var(--surface,#fff);box-shadow:0 18px 60px #17253612}
+.cloud-brand{display:flex;align-items:center;gap:12px;color:var(--accent,#185d65);font-size:28px;margin-bottom:24px}
+.cloud-login h1{font-size:24px;margin:0 0 8px}.cloud-login p{margin:0 0 20px}.cloud-login form{display:grid;gap:17px}.cloud-login .field{display:grid;gap:6px}.cloud-login .input{width:100%;min-height:44px}.cloud-login button{min-height:40px;justify-content:center}
+.cloud-remember{display:flex;gap:9px;align-items:flex-start;font-size:13px}.cloud-remember input{margin-top:4px}.cloud-login .cloud-message{margin:18px 0 8px;font-size:14px;min-height:22px;white-space:pre-line}.cloud-login .cloud-login-note{font-size:12px;color:var(--muted,#657589);margin:20px 0 0}
+.cloud-status{white-space:nowrap;gap:6px!important}.cloud-dot{width:9px;height:9px;border-radius:50%;background:#7c8793;flex:none}.cloud-dot[data-state="synced"]{background:#23854a}.cloud-dot[data-state="syncing"],.cloud-dot[data-state="pending"]{background:#b87505}.cloud-dot[data-state="error"],.cloud-dot[data-state="conflict"],.cloud-dot[data-state="blocked"]{background:#d03d3d}
+.cloud-status-line{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px}.cloud-status-line small{overflow-wrap:anywhere}.cloud-versions{display:grid;grid-template-columns:1fr 1fr;gap:12px}.cloud-versions>div{border:1px solid var(--border,#d9e1e8);padding:12px;border-radius:8px}.cloud-versions p{font-size:13px}.cloud-recovery>div{padding-top:12px}
+[data-theme="dark"] .cloud-login{background:#1b2532;color:#edf2f8;border-color:#405166}[data-theme="dark"] #cloud-gate{background:#111b27;color:#edf2f8}[data-theme="dark"] .cloud-brand{color:#89d1cc}
+@media(max-width:700px){.cloud-login{padding:24px}.cloud-versions{grid-template-columns:1fr}.cloud-status [data-cloud-label]{max-width:130px;overflow:hidden;text-overflow:ellipsis}}
+@media print{#cloud-gate,.cloud-status{display:none!important}body[data-cloud-locked] *{display:none!important}}

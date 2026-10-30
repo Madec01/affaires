@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="Repère — Votre espace local pour suivre vos affaires, vos actions et vos notes.">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; font-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://www.gstatic.com; style-src 'unsafe-inline'; img-src data: blob:; connect-src https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firestore.googleapis.com https://firebaseinstallations.googleapis.com https://www.googleapis.com https://repere-affaires.firebaseapp.com; frame-src https://repere-affaires.firebaseapp.com; font-src 'none'; base-uri 'none'; form-action 'none'">
 <title>Repère · Mes affaires</title>
 <style>
 /* Existing layout and dedicated synthesis/print rules; visual app styles are centralized. */
@@ -1387,9 +1387,24 @@ mark{background:var(--amber-soft);color:var(--amber)}.block table td,.block tabl
 @media(max-width:1250px){.v123-backup-status span{display:none}.v123-backup-status{padding:7px;min-width:32px;justify-content:center}}
 @media print{.v123-backup-status{display:none!important}}
 
+/* Account controls reuse the application's light/dark theme. */
+body[data-cloud-locked] #sidebar,body[data-cloud-locked] #main,body[data-cloud-locked] #modal-root,body[data-cloud-locked] #slash-root,body[data-cloud-locked] #toast-root,body[data-cloud-locked] #sidebar-backdrop{display:none!important}
+#cloud-gate{position:fixed;inset:0;z-index:10000;overflow:auto;display:grid;place-items:center;background:var(--bg,#f2f4f7);color:var(--text,#172536);padding:28px 16px}
+#cloud-gate[hidden]{display:none}
+.cloud-login{width:min(440px,100%);padding:32px;border:1px solid var(--border,#d9e1e8);border-radius:18px;background:var(--surface,#fff);box-shadow:0 18px 60px #17253612}
+.cloud-brand{display:flex;align-items:center;gap:12px;color:var(--accent,#185d65);font-size:28px;margin-bottom:24px}
+.cloud-login h1{font-size:24px;margin:0 0 8px}.cloud-login p{margin:0 0 20px}.cloud-login form{display:grid;gap:17px}.cloud-login .field{display:grid;gap:6px}.cloud-login .input{width:100%;min-height:44px}.cloud-login button{min-height:40px;justify-content:center}
+.cloud-remember{display:flex;gap:9px;align-items:flex-start;font-size:13px}.cloud-remember input{margin-top:4px}.cloud-login .cloud-message{margin:18px 0 8px;font-size:14px;min-height:22px;white-space:pre-line}.cloud-login .cloud-login-note{font-size:12px;color:var(--muted,#657589);margin:20px 0 0}
+.cloud-status{white-space:nowrap;gap:6px!important}.cloud-dot{width:9px;height:9px;border-radius:50%;background:#7c8793;flex:none}.cloud-dot[data-state="synced"]{background:#23854a}.cloud-dot[data-state="syncing"],.cloud-dot[data-state="pending"]{background:#b87505}.cloud-dot[data-state="error"],.cloud-dot[data-state="conflict"],.cloud-dot[data-state="blocked"]{background:#d03d3d}
+.cloud-status-line{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px}.cloud-status-line small{overflow-wrap:anywhere}.cloud-versions{display:grid;grid-template-columns:1fr 1fr;gap:12px}.cloud-versions>div{border:1px solid var(--border,#d9e1e8);padding:12px;border-radius:8px}.cloud-versions p{font-size:13px}.cloud-recovery>div{padding-top:12px}
+[data-theme="dark"] .cloud-login{background:#1b2532;color:#edf2f8;border-color:#405166}[data-theme="dark"] #cloud-gate{background:#111b27;color:#edf2f8}[data-theme="dark"] .cloud-brand{color:#89d1cc}
+@media(max-width:700px){.cloud-login{padding:24px}.cloud-versions{grid-template-columns:1fr}.cloud-status [data-cloud-label]{max-width:130px;overflow:hidden;text-overflow:ellipsis}}
+@media print{#cloud-gate,.cloud-status{display:none!important}body[data-cloud-locked] *{display:none!important}}
+
 </style>
 </head>
-<body>
+<body data-cloud-locked>
+<section id="cloud-gate" aria-label="Connexion Repère"></section>
 <input type="file" id="backup-verify-file" accept=".json,application/json" hidden>
 <button type="button" id="sidebar-backdrop" data-act="close-navigation" aria-label="Fermer la navigation" hidden></button>
 <aside id="sidebar" aria-label="Navigation principale"></aside>
@@ -1399,7 +1414,429 @@ mark{background:var(--amber-soft);color:var(--amber)}.block table td,.block tabl
 <script>
 'use strict';
 const CONTEXT_KEYS=['T1_TEM','T1_AT','T2_TEM','T2_AT'];
-const VERSION='1.23', STORE='repere-affaires-v1', BACKUP=STORE+'-previous';
+const CLOUD_OWNER='uApWq2k3mHNiCymeLpJRA3E0UwJ2', CLOUD_WEB=/^https?:$/.test(location.protocol);
+const VERSION='1.25', STORE=CLOUD_WEB?'repere-affaires-cloud-v1-'+CLOUD_OWNER:'repere-affaires-v1', BACKUP=STORE+'-previous';
+/* Repère cloud protocol: incremental transport and explicit conflict resolution. */
+(function(root){
+ 'use strict';
+ const MAX_BYTES=16*1024*1024, CHUNK_CHARS=120000, MAX_CHUNKS=140;
+ function canonical(data){
+  const copy={...data,settings:{...data.settings}};
+  delete copy.updatedAt;delete copy.lastExport;
+  delete copy.settings.autoExportMinutes;delete copy.settings.warnUnexported;delete copy.settings.theme;delete copy.settings.elementSections;
+  const stable=v=>Array.isArray(v)?v.map(stable):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().filter(k=>v[k]!==undefined).map(k=>[k,stable(v[k])])):v;
+  return JSON.stringify(stable(copy));
+ }
+ async function digest(text){const bytes=new TextEncoder().encode(text);return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(b=>b.toString(16).padStart(2,'0')).join('')}
+ function split(raw){
+  if(new TextEncoder().encode(raw).length>MAX_BYTES)throw Object.assign(Error('La synchronisation accepte jusqu’à 16 Mio de données. Vos données locales sont conservées et restent exportables.'),{code:'repere/size'});
+  const chunks=[];for(let i=0;i<raw.length;){let end=Math.min(i+CHUNK_CHARS,raw.length);if(end<raw.length&&/[\uD800-\uDBFF]/.test(raw[end-1]))end--;chunks.push(raw.slice(i,end));i=end}return chunks;
+ }
+ function validMeta(m){
+  if(!m||m.format!==1||!Number.isSafeInteger(m.revision)||m.revision<1||!Number.isInteger(m.chunks)||m.chunks<1||m.chunks>MAX_CHUNKS||!/^[a-f0-9]{64}$/.test(m.hash||''))throw Object.assign(Error('Le format des données synchronisées est inconnu. Aucune donnée ne sera remplacée.'),{code:'repere/format'});
+  return m;
+ }
+ function decide(localHash,base,remote,hasContent){
+  if(remote&&remote.hash===localHash)return 'ack';
+  if(!base){if(remote)return hasContent?'conflict':'pull';return hasContent?'initial':'empty'}
+  if(!remote){if(base.revision>0)return 'conflict';return localHash===base.hash?'empty':'push'}
+  if(remote.revision===base.revision&&remote.hash===base.hash)return localHash===base.hash?'ack':'push';
+  if(localHash===base.hash)return 'pull';
+  if(remote.hash===base.hash)return 'push';
+  return 'conflict';
+ }
+ function createController(io){
+  let base=io.base||null,stopped=false,busy=false,again=false,status='loading',remote=null,error='',pending=true,resumeChoice=null;
+  const view=()=>({status,base,remote,error,busy,pending});
+  function emit(next,message=''){status=next;error=message;io.onState(view())}
+  async function ack(meta,hash){base={revision:meta?.revision||0,hash};await io.saveMeta(base)}
+  async function run(){
+   if(stopped)return;
+   if(resumeChoice&&!busy){const choice=resumeChoice;resumeChoice=null;status=remote?'conflict':'initial';return resolve(choice.direction,choice.observed)}
+   if(busy){again=true;return}
+   if(io.blocked()){pending=true;emit('blocked');return}
+   if(!io.online()){emit('offline');return}
+   busy=true;again=false;emit('syncing');
+   try{
+    const next=await io.read();if(stopped)return;remote=next;
+    // Capture local state AFTER the network read: edits made during the read count.
+    const data=io.local(),raw=canonical(data),hash=await digest(raw);if(stopped)return;
+    if(canonical(io.local())!==raw){again=true;return}
+    const choice=decide(hash,base,next?.meta||null,io.hasContent(data));
+    pending=!['ack','empty','pull'].includes(choice);
+    if(choice==='conflict'||choice==='initial'){pending=true;emit(choice);return}
+    if(choice==='pull'){
+     if(io.editing()){pending=true;emit('remote');return}
+     if(io.blocked()||canonical(io.local())!==raw){again=true;return}
+     // Local durable commit must finish before acknowledging remote data.
+     await io.apply(next.data);if(stopped)return;await ack(next.meta,next.meta.hash);pending=false;emit('synced');return;
+    }
+    if(choice==='ack'||choice==='empty'){await ack(next?.meta,hash);pending=canonical(io.local())!==raw;if(pending)again=true;emit(pending?'pending':'synced');return}
+    const chunks=split(raw),expected=next?.meta||null;
+    const written=await io.write({raw,chunks,hash},expected);if(stopped)return;
+    await ack(written,hash);
+    pending=canonical(io.local())!==raw;
+    if(pending)again=true;emit(pending?'pending':'synced');
+   }catch(e){
+    if(stopped)return;
+    pending=true;
+    if(e.code==='repere/budget'){emit('paused',io.errorText(e));io.schedule(Math.max(10000,e.retryAt-Date.now()))}
+    else if(e.code==='repere/conflict'){again=true;emit('pending')}
+    else emit(!io.online()||['unavailable','deadline-exceeded'].includes(e.code)?'offline':'error',io.errorText(e));
+   }finally{busy=false;if(!stopped){io.onState(view());if(again)io.schedule()}}
+  }
+  async function resolve(direction,observed){
+   if(stopped||busy||!['conflict','initial'].includes(status))return false;
+   // The user chose the displayed revision. Do not silently accept a newer one.
+   const expected=observed===undefined?(remote?.meta||null):observed;
+   if(!io.online()){emit('offline');return false}
+   if(io.blocked()){emit('blocked');return false}
+   busy=true;emit('syncing');
+   try{
+    const next=await io.read();if(stopped)return false;
+    if((next?.meta.revision||0)!==(expected?.revision||0)||(next?.meta.hash||'')!==(expected?.hash||'')){remote=next;emit('conflict','Une autre modification est arrivée. Comparez à nouveau les deux versions.');return false}
+    const data=io.local(),raw=canonical(data),hash=await digest(raw);if(stopped)return false;
+    if(canonical(io.local())!==raw){emit('conflict','Votre version locale a changé. Recommencez le choix.');return false}
+    if(direction==='remote'){
+     if(!next)throw Error('La copie en ligne a été supprimée. Exportez votre copie locale avant de décider de la republier.');
+     await io.preserve(data,'local');if(stopped)return false;if(io.blocked()||canonical(io.local())!==raw)throw Error('La copie locale a changé. Recommencez le choix.');await io.apply(next.data);if(stopped)return;await ack(next.meta,next.meta.hash);pending=false;emit('synced');
+    }else if(direction==='local'){
+     if(next)await io.preserve(next.data,'remote');if(stopped)return false;
+     const chunks=split(raw),written=await io.write({raw,chunks,hash},expected);if(stopped)return false;
+     await ack(written,hash);pending=canonical(io.local())!==raw;emit(pending?'pending':'synced');if(pending)again=true;
+    }else throw Error('Choix de résolution inconnu.');
+    return true;
+   }catch(e){if(!stopped){pending=true;if(e.code==='repere/budget'){resumeChoice={direction,observed:expected};emit('paused',io.errorText(e));io.schedule(Math.max(10000,e.retryAt-Date.now()))}
+    else if(e.code==='repere/conflict'){again=true;emit('pending')}else emit('error',io.errorText(e))}return false}
+   finally{busy=false;if(!stopped){io.onState(view());if(again)io.schedule()}}
+  }
+  return {run,resolve,view,stop(){stopped=true},changed(){if(stopped)return;pending=true;if(!['conflict','initial'].includes(status))emit('pending');io.schedule()}};
+ }
+ const api={canonical,digest,split,validMeta,decide,createController,MAX_BYTES,MAX_CHUNKS};
+ root.RepereSync=api;if(typeof module!=='undefined'&&module.exports)module.exports=api;
+})(globalThis);
+
+/* Durable local data, shared-tab compare-and-swap and request budgets. No network. */
+(function(root){
+ 'use strict';
+ const WINDOW=300000,READ_LIMIT=200,WRITE_LIMIT=200;
+ const failure=(message,code,extra={})=>Object.assign(Error(message),{code,...extra});
+ function budgetNext(old,reads,writes,now=Date.now()){
+  const events=(old?.events||[]).filter(e=>e.at>now-WINDOW),r=events.reduce((s,e)=>s+e.reads,0),w=events.reduce((s,e)=>s+e.writes,0);
+  if(r+reads>READ_LIMIT||w+writes>WRITE_LIMIT)throw failure('Pause du quota de sécurité : les données restent dans IndexedDB. Reprise possible dans quelques minutes.','repere/budget',{retryAt:(events[0]?.at||now)+WINDOW+100});
+  if(reads||writes)events.push({at:now,reads,writes});return {events,reads:r+reads,writes:w+writes};
+ }
+ function create(namespace,factory=root.indexedDB){
+  let opened;
+  function open(){if(!opened)opened=new Promise((resolve,reject)=>{
+   if(!factory){reject(failure('IndexedDB est indisponible. Exportez vos données et utilisez un navigateur autorisant le stockage local.','repere/local'));return}
+   const q=factory.open('repere-indexeddb-v1',1);q.onupgradeneeded=()=>{if(!q.result.objectStoreNames.contains('kv'))q.result.createObjectStore('kv')};q.onerror=()=>{opened=null;reject(q.error)};q.onblocked=()=>reject(failure('Fermez les autres onglets Repère pour ouvrir IndexedDB.','repere/local'));
+   q.onsuccess=()=>{q.result.onversionchange=()=>{q.result.close();opened=null};resolve(q.result)};
+  });return opened}
+  const key=k=>namespace+':'+k;
+  async function tx(mode,operation){const db=await open();return new Promise((resolve,reject)=>{
+   let t;try{t=db.transaction('kv',mode,{durability:'strict'})}catch{t=db.transaction('kv',mode)}
+   let result,error;const store=t.objectStore('kv');
+   t.oncomplete=()=>resolve(result);t.onabort=()=>reject(error||t.error||failure('Écriture IndexedDB interrompue.','repere/local'));t.onerror=()=>{};
+   const done=v=>{result=v},fail=e=>{error=e;t.abort()};try{operation(store,done,fail)}catch(e){fail(e)}
+  })}
+  const get=k=>tx('readonly',(s,done)=>{const q=s.get(key(k));q.onsuccess=()=>done(q.result??null)});
+  const set=(k,v)=>tx('readwrite',(s,done)=>{s.put(v,key(k));done(v)});
+  const setMany=rows=>tx('readwrite',s=>{for(const [k,v] of rows)s.put(v,key(k))});
+  const update=(k,fn)=>tx('readwrite',(s,done,fail)=>{const q=s.get(key(k));q.onsuccess=()=>{try{const v=fn(q.result??null);s.put(v,key(k));done(v)}catch(e){fail(e)}}});
+  const save=(data,expected,keepPrevious=()=>true)=>update('workspace',old=>{
+   if((old?.revision||0)!==expected)throw failure('Une autre fenêtre a modifié les données locales. Exportez cette session avant de recharger.','repere/tab');
+   return {data,revision:expected+1,previous:old?.data&&keepPrevious(old.data,data)?old.data:(old?.previous||null),savedAt:Date.now()};
+  });
+  const reserve=(reads,writes,now=Date.now())=>update('budget',old=>budgetNext(old,reads,writes,now));
+  const acquire=(owner,manual=false,now=Date.now())=>update('lease',old=>{
+   if(old?.owner&&old.owner!==owner&&old.until>now)throw failure('Une autre fenêtre synchronise déjà cet espace.','repere/busy');
+   if(old?.lastAt&&now-old.lastAt<(manual?10000:60000))throw failure('Les demandes rapprochées sont regroupées.','repere/cooldown',{retryAt:old.lastAt+(manual?10000:60000)});
+   return {owner,until:now+120000,lastAt:now};
+  });
+  const renew=owner=>update('lease',old=>{if(old?.owner!==owner||old.until<Date.now())throw failure('La session de synchronisation a expiré.','repere/busy');return {...old,until:Date.now()+120000}});
+  const release=owner=>update('lease',old=>old?.owner===owner?{...old,owner:null,until:0}:old);
+  return {get,set,setMany,update,save,reserve,acquire,renew,release,close:async()=>{if(opened)(await opened).close();opened=null}};
+ }
+ const api={create,budgetNext,WINDOW,READ_LIMIT,WRITE_LIMIT};root.RepereLocal=api;if(typeof module!=='undefined'&&module.exports)module.exports=api;
+})(globalThis);
+
+/* Immutable per-record objects. One small manifest read; only missing hashes downloaded. */
+(function(root){
+ 'use strict';
+ const COLLECTIONS=['projects','tasks','pages','documents','captures','contacts','companies','elements','elementTypes'];
+ const fail=(m,c='repere/format')=>Object.assign(Error(m),{code:c});
+ async function encode(data){
+  const normalized=JSON.parse(RepereSync.canonical(data)),header={...normalized,order:{}},records=[];
+  for(const name of COLLECTIONS){header.order[name]=[];for(const item of normalized[name]||[]){const key=name+'~'+item.id;header.order[name].push(key);records.push([key,JSON.stringify(item)])}delete header[name]}
+  records.push(['root',JSON.stringify(header)]);
+  const entries=[],objects=new Map();
+  for(const [key,raw] of records){const hash=await RepereSync.digest(raw),parts=RepereSync.split(raw);entries.push({key,hash,parts:parts.length});parts.forEach((text,i)=>objects.set(hash+'_'+i,text))}
+  return {entries,objects,raw:RepereSync.canonical(data),hash:await RepereSync.digest(RepereSync.canonical(data))};
+ }
+ function manifest(m){
+  if(!m||m.format!==2||!Number.isSafeInteger(m.revision)||m.revision<1||!/^[a-f0-9]{64}$/.test(m.hash||'')||typeof m.index!=='string'||new TextEncoder().encode(m.index).length>700000)throw fail('Format Firebase inconnu ou index trop volumineux. La copie locale est conservée.');
+  const entries=JSON.parse(m.index),keys=new Set();if(!Array.isArray(entries)||!entries.length)throw fail('Index Firebase vide.');
+  for(const e of entries){if(!e||typeof e.key!=='string'||keys.has(e.key)||!/^[a-f0-9]{64}$/.test(e.hash)||!Number.isInteger(e.parts)||e.parts<1||e.parts>RepereSync.MAX_CHUNKS)throw fail('Index Firebase invalide.');keys.add(e.key)}
+  if(!keys.has('root'))throw fail('Index Firebase incomplet.');return {...m,entries};
+ }
+ async function decode(meta,read){
+  const records=new Map();for(const e of meta.entries){let raw='';for(let i=0;i<e.parts;i++)raw+=await read(e.hash+'_'+i);if(await RepereSync.digest(raw)!==e.hash)throw fail('Le contrôle d’intégrité d’un élément Firebase a échoué.');records.set(e.key,JSON.parse(raw))}
+  const header=records.get('root'),data={...header};delete data.order;
+  if(!header?.order)throw fail('Ordre des éléments absent.');
+  for(const name of COLLECTIONS){if(!Array.isArray(header.order[name]))throw fail('Collection Firebase invalide.');data[name]=header.order[name].map(key=>{if(!key.startsWith(name+'~')||!records.has(key))throw fail('Élément Firebase manquant.');return records.get(key)})}
+  if(await RepereSync.digest(RepereSync.canonical(data))!==meta.hash)throw fail('Le contrôle d’intégrité de la base Firebase a échoué.');return data;
+ }
+ function create({sdk,fire,userId,cache,local,valid=x=>x,active=()=>true}){
+  const ref=sdk.doc(fire,'users',userId,'sync','state'),part=id=>sdk.doc(ref,'objects',id);
+  const check=()=>{if(!active())throw fail('Session interrompue.','repere/stopped')};
+  const reserve=async(r,w)=>{check();await cache.reserve(r,w);check()};
+  async function seed(){const bundle=await encode(local());check();await cache.setMany([...bundle.objects].map(([id,text])=>['object:'+id,text]));return bundle}
+  async function read(){
+   await seed();await reserve(1,0);const snapshot=await sdk.getDocFromServer(ref);check();if(!snapshot.exists())return null;
+   const meta=manifest(snapshot.data());
+   const data=await decode(meta,async id=>{
+    let text=await cache.get('object:'+id);check();if(text!==null)return text;
+    await reserve(1,0);const s=await sdk.getDocFromServer(part(id));check();if(!s.exists()||typeof s.data().text!=='string')throw fail('Copie Firebase incomplète.');text=s.data().text;await cache.set('object:'+id,text);return text;
+   });valid(data);return {meta,data};
+  }
+  async function write(payload,expected){
+   const bundle=await encode(JSON.parse(payload.raw)),index=JSON.stringify(bundle.entries);
+   if(new TextEncoder().encode(index).length>700000)throw fail('L’index de synchronisation est trop volumineux. Exportez votre copie locale.','repere/size');
+   const known=new Set();for(const e of expected?.entries||[])for(let i=0;i<e.parts;i++)known.add(e.hash+'_'+i);
+   const staged=new Set((await cache.get('uploaded'))||[]),missing=[...bundle.objects].filter(([id])=>!known.has(id)&&!staged.has(id));
+   for(let i=0;i<missing.length;i+=10){
+    const batchRows=missing.slice(i,i+10);await reserve(0,batchRows.length);const batch=sdk.writeBatch(fire);for(const [id,text] of batchRows)batch.set(part(id),{text});await batch.commit();check();
+    batchRows.forEach(([id])=>staged.add(id));await cache.set('uploaded',[...staged]);
+   }
+   await reserve(2,1); // At most two transaction attempts. Conservative reservation.
+   const written=await sdk.runTransaction(fire,async tx=>{
+    check();const s=await tx.get(ref),current=s.exists()?manifest(s.data()):null;
+    if((current?.revision||0)!==(expected?.revision||0)||(current?.hash||'')!==(expected?.hash||''))throw fail('Une autre modification est arrivée sur Firebase.','repere/conflict');
+    check();const meta={format:2,revision:(current?.revision||0)+1,hash:bundle.hash,index,updatedAt:new Date().toISOString()};tx.set(ref,meta);return manifest(meta);
+   },{maxAttempts:2});
+   check();await cache.setMany([...bundle.objects].map(([id,text])=>['object:'+id,text]));return written;
+  }
+  return {read,write,root:ref};
+ }
+ const api={create,encode,manifest,decode,COLLECTIONS};root.RepereTransport=api;if(typeof module!=='undefined'&&module.exports)module.exports=api;
+})(globalThis);
+
+// Firebase client configuration is public. Authorization is enforced by Firestore rules.
+const FIREBASE_CONFIG={apiKey:'AIzaSyCgveMBckBmNXIGBpALlR-Ma0xpawR8Rvo',authDomain:'repere-affaires.firebaseapp.com',projectId:'repere-affaires',storageBucket:'repere-affaires.firebasestorage.app',messagingSenderId:'721521791922',appId:'1:721521791922:web:ec14b05bad4a180d0ecaab'};
+const CLOUD_META=STORE+'-sync', CLOUD_URL='https://madec01.github.io/affaires/';
+const localState={store:RepereLocal.create(STORE),ready:false,revision:0,generation:0,chain:Promise.resolve(),channel:null};
+const cloud={sdk:null,auth:null,fire:null,user:null,controller:null,unsubscribe:null,timer:null,locked:true,epoch:0,sdkPromise:null,view:{status:CLOUD_WEB?'loading':'local',pending:false,busy:false},error:'',loading:false,lastCanonical:null,runAt:0,retryCount:0,quota:null,owner:Date.now().toString(36)+Math.random().toString(36).slice(2)};
+function cloudError(e){
+ const code=String(e?.code||'').replace(/^firestore\//,'');
+ return ({'auth/invalid-credential':'Adresse e-mail ou mot de passe incorrect.','auth/invalid-login-credentials':'Adresse e-mail ou mot de passe incorrect.','auth/wrong-password':'Adresse e-mail ou mot de passe incorrect.','auth/user-not-found':'Adresse e-mail ou mot de passe incorrect.','auth/invalid-email':'Vérifiez le format de l’adresse e-mail.','auth/user-disabled':'Ce compte a été désactivé dans Firebase.','auth/too-many-requests':'Trop de tentatives. Patientez avant de réessayer.','auth/network-request-failed':'Firebase est inaccessible. Vérifiez votre connexion et les restrictions du réseau.','auth/operation-not-allowed':'Activez Adresse e-mail/Mot de passe dans Firebase Authentication.','auth/unauthorized-domain':'Ajoutez madec01.github.io dans les domaines autorisés de Firebase Authentication.','permission-denied':'Accès Firestore refusé. Vérifiez que les règles publiées contiennent votre UID et le chemin users/{userId}.','resource-exhausted':'Quota Firebase atteint. Vos modifications restent sur cet appareil ; réessayez plus tard.','unavailable':'Connexion à Firebase indisponible. Vos modifications restent sur cet appareil.','repere/owner':'Ce compte n’est pas autorisé pour cet espace Repère.','repere/local':'Enregistrement local impossible. Exportez vos données avant de continuer.'})[code]||e?.message||'La connexion n’a pas abouti. Réessayez.';
+}
+function cloudSetLocked(value){
+ cloud.locked=value;document.body.toggleAttribute('data-cloud-locked',value);
+ for(const id of ['sidebar','main','modal-root','slash-root','toast-root']){const el=document.getElementById(id);if(el)el.inert=value}
+ const gate=document.getElementById('cloud-gate');if(gate)gate.hidden=!value;
+}
+function cloudGate(message=''){
+ const gate=document.getElementById('cloud-gate');
+ gate.innerHTML='<div class="cloud-login"><div class="cloud-brand">'+ic('leaf',30)+'<strong>repère</strong></div><h1>Votre espace de travail</h1><p>Connectez-vous pour retrouver vos affaires sur vos appareils.</p><form id="cloud-login-form"><label class="field">Adresse e-mail<input class="input" name="email" type="email" autocomplete="username" required maxlength="254"></label><label class="field">Mot de passe<input class="input" name="password" type="password" autocomplete="current-password" required></label><label class="cloud-remember"><input type="checkbox" name="remember" checked> Rester connecté sur cet appareil personnel</label><button type="submit" class="btn primary" '+(!cloud.sdk?'disabled':'')+'>Se connecter</button><button type="button" class="text-button" data-cloud="reset" '+(!cloud.sdk?'disabled':'')+'>Mot de passe oublié</button></form><p id="cloud-login-message" class="cloud-message" role="status" aria-live="polite">'+esc(message||(!cloud.sdk?'Chargement de la connexion…':''))+'</p>'+(!cloud.sdk?'<button type="button" class="text-button" data-cloud="reload">Réessayer le chargement</button>':'')+'<p class="cloud-login-note">Compte personnel · Les sauvegardes JSON restent disponibles après connexion.</p></div>';
+}
+function cloudGateMessage(text){const n=document.getElementById('cloud-login-message');if(n)n.textContent=text}
+function cloudLabel(){
+ if(!CLOUD_WEB)return 'Mode local';
+ if(!cloud.user)return 'Connexion';
+ if(!navigator.onLine)return 'Hors connexion';
+ return ({loading:'Connexion…',syncing:'Synchronisation…',synced:'Synchronisé',pending:'En attente',offline:'Hors connexion',error:'Erreur de synchro',conflict:'Conflit à résoudre',initial:'Premier envoi',remote:'Mise à jour disponible',blocked:'Sauvegarde à vérifier',paused:'Synchro en pause'})[cloud.view.status]||'Connexion';
+}
+function cloudTopButton(){return '<button type="button" class="btn small" data-cloud="retry" title="Enregistrer localement et synchroniser" aria-label="Enregistrer maintenant">'+ic('check',16)+'</button><button type="button" class="btn small cloud-status" data-cloud="account" title="Compte et synchronisation" aria-label="Compte · '+esc(cloudLabel())+'"><span class="cloud-dot" data-state="'+esc(cloud.view.status)+'"></span><span data-cloud-label>'+esc(cloudLabel())+'</span></button>'}
+function cloudCounts(data){return data?data.projects.length+' affaires · '+data.tasks.length+' actions · '+data.pages.length+' pages · '+data.contacts.length+' contacts':'Aucune copie en ligne'}
+function cloudDetails(){
+ const v=cloud.view;
+ if(!CLOUD_WEB)return '<p>Ce fichier enregistre vos modifications dans IndexedDB, sans synchronisation.</p><button type="button" class="btn" data-cloud="retry">Enregistrer maintenant</button><a class="btn primary" href="'+CLOUD_URL+'" target="_blank" rel="noopener noreferrer">Ouvrir Repère en ligne</a><p class="form-hint">Exportez vos données en JSON, puis importez le fichier après connexion à la version Web.</p>';
+ let html='<div class="cloud-status-line"><strong>'+esc(cloudLabel())+'</strong><small>'+esc(cloud.user?.email||'')+'</small></div>';
+ if(v.error)html+='<p class="notice warn" role="alert">'+esc(v.error)+'</p>';
+ if(v.status==='conflict'||v.status==='initial'){
+  html+='<p>'+(v.status==='initial'?'Cette copie locale n’a jamais été associée à Firebase. Choisissez explicitement de l’envoyer.':'Les deux copies ont changé. Aucune version n’est écrasée automatiquement. Le choix porte sur tout l’espace de travail.')+'</p><div class="cloud-versions"><div><strong>Sur cet appareil</strong><p>'+esc(cloudCounts(db))+'</p><button type="button" class="btn small" data-cloud="export-local">Exporter cette copie</button></div><div><strong>Sur Firebase</strong><p>'+esc(cloudCounts(v.remote?.data))+'</p>'+(v.remote?'<button type="button" class="btn small" data-cloud="export-remote">Exporter cette copie</button>':'')+'</div></div><div class="flex wrap"><button type="button" class="btn primary" data-cloud="choose-local">'+(v.status==='initial'?'Envoyer cette copie':'Conserver ma version locale')+'</button>'+(v.remote?'<button type="button" class="btn" data-cloud="choose-remote">Reprendre la version Firebase</button>':'')+'</div><p class="form-hint">Une copie de la version remplacée sera conservée sur cet appareil. Vous pourrez l’exporter ci-dessous.</p>';
+ }else if(v.status==='remote')html+='<p>Terminez le formulaire ou quittez le champ en cours pour recevoir la mise à jour.</p>';
+ else if(v.status==='offline')html+='<p>Les modifications enregistrées restent sur cet appareil. La synchronisation reprendra au retour du réseau, tant que la page est ouverte.</p>';
+ else html+='<p>Les modifications sont enregistrées dans IndexedDB, puis regroupées pour Firebase : 10 secondes après la dernière modification, au plus un cycle automatique par minute. Aucun contrôle périodique au repos. Les formulaires non validés ne sont pas enregistrés.</p>';
+ html+='<div class="flex wrap"><button type="button" class="btn small" data-cloud="retry">Enregistrer et synchroniser</button><button type="button" class="btn small" data-cloud="signout">Se déconnecter</button></div><details class="cloud-recovery"><summary>Reprise et copies de sécurité</summary><div class="stack"><button type="button" class="btn small" data-cloud="legacy">Reprendre les anciennes données de ce navigateur</button><button type="button" class="btn small" data-cloud="saved-local">Exporter la copie locale remplacée</button><button type="button" class="btn small" data-cloud="saved-remote">Exporter la copie Firebase remplacée</button><p class="form-hint">Les exports automatiques restent disponibles dans Réglages. La synchronisation ne remplace pas une sauvegarde datée.</p></div></details>';
+ html+='<p class="form-hint">Limite par appareil : 200 lectures et 200 écritures estimées sur 5 minutes. La fermeture conserve en priorité la copie locale ; attendez « Synchronisé » pour garantir l’envoi.</p>';
+ if(cloud.quota){const q=RepereLocal.budgetNext(cloud.quota,0,0);html+='<p class="form-hint">Réservées sur les 5 dernières minutes : '+q.reads+' lectures · '+q.writes+' écritures. Compteurs de précaution, hors connexions et console Firebase.</p>'}
+ return html;
+}
+function cloudPanel(){return '<section class="panel"><div class="panel-head"><h2>Compte et synchronisation</h2>'+ic('user')+'</div><div class="panel-body stack" data-cloud-details>'+cloudDetails()+'</div></section>'}
+function cloudRefresh(){
+ for(const n of document.querySelectorAll('[data-cloud-label]'))n.textContent=cloudLabel();
+ for(const n of document.querySelectorAll('.cloud-dot'))n.dataset.state=cloud.view.status;
+ for(const n of document.querySelectorAll('[data-cloud-details]'))n.innerHTML=cloudDetails();
+ for(const n of document.querySelectorAll('.cloud-status'))n.setAttribute('aria-label','Compte · '+cloudLabel());
+}
+function cloudAccount(){modal('Compte et synchronisation',CLOUD_WEB?'Vos affaires sont rattachées à votre compte personnel.':'Fichier local',dialogBody('<div class="stack" data-cloud-account data-cloud-details>'+cloudDetails()+'</div>','<div class="form-actions">'+btn('Fermer','close-modal','close')+'</div>'))}
+function cloudSchedule(delay=10000){
+ if(!CLOUD_WEB||!cloud.user||cloud.locked||!cloud.controller)return;
+ if(['error','conflict','initial'].includes(cloud.view.status))return;
+ clearTimeout(cloud.timer);const wait=Math.max(delay,60000-(Date.now()-cloud.runAt));cloud.timer=setTimeout(()=>cloudRun(false),wait);
+}
+async function cloudRun(manual=false,direction=null,observed=null){
+ if(!cloud.controller||cloud.locked||cloud.view.busy)return false;
+ clearTimeout(cloud.timer);cloud.timer=null;
+ if(dirty&&!await persist())return false;
+ if(!navigator.onLine){cloud.view={...cloud.view,status:'offline'};cloudRefresh();return false}
+ let acquired=false,heartbeat;
+ try{
+  await localState.store.acquire(cloud.owner,manual);acquired=true;cloud.runAt=Date.now();
+  heartbeat=setInterval(()=>localState.store.renew(cloud.owner).catch(()=>{}),30000);
+  return direction?await cloud.controller.resolve(direction,observed):await cloud.controller.run();
+ }catch(e){
+  if(e.code==='repere/cooldown'){if(cloud.view.pending)cloudSchedule(Math.max(10000,e.retryAt-Date.now()));if(manual)toast('Demande regroupée avec la précédente. Patientez quelques secondes.');return false}
+  if(e.code==='repere/busy'){if(manual)toast(e.message);return false}
+  cloud.view={...cloud.view,status:'error',error:cloudError(e)};cloudRefresh();return false;
+ }finally{clearInterval(heartbeat);try{if(acquired)await localState.store.release(cloud.owner);cloud.quota=await localState.store.get('budget')}catch(e){storageError=e.message;setSaveState()}cloudRefresh()}
+}
+async function localLoad(){
+ let saved=await localState.store.get('workspace');
+ if(!saved){const legacy=localStorage.getItem(STORE);if(legacy){const data=validateDB(JSON.parse(legacy));saved=await localState.store.save(data,0);const previous=localStorage.getItem(BACKUP);if(previous)await localState.store.update('workspace',row=>({...row,previous:validateDB(JSON.parse(previous))}))}}
+ localState.revision=saved?.revision||0;db=saved?validateDB(saved.data):emptyDB();lastRaw=JSON.stringify(db);localState.ready=true;dirty=false;cloud.lastCanonical=RepereSync.canonical(db);
+ if(!localState.channel&&typeof BroadcastChannel!=='undefined'){
+  localState.channel=new BroadcastChannel(STORE);
+  localState.channel.onmessage=e=>{if(!cloud.locked&&e.data.revision!==localState.revision){conflict=true;setSaveState()}};
+ }
+}
+function localAnnounce(){localState.channel?.postMessage({revision:localState.revision})}
+
+function cloudChanged(){const raw=RepereSync.canonical(db);if(raw===cloud.lastCanonical)return;cloud.lastCanonical=raw;if(CLOUD_WEB&&cloud.user&&!cloud.locked)cloud.controller?.changed()}
+function cloudHasPending(){return CLOUD_WEB&&!!cloud.user&&!!cloud.view.pending}
+function cloudEditing(){return !!document.querySelector('#modal-root .modal:not(:has([data-cloud-account]))')||!!document.activeElement?.matches('input:not([type="checkbox"]):not([type="file"]),textarea,[contenteditable="true"]')||!!slash}
+function cloudResetUI(){ui={...ui,view:'home',projectId:'',pageId:'',tab:'summary',navHistory:[],navCurrent:null,mobileNavOpen:false};undoSnapshot=null;savedRange=null;lastEditable=null;modalStack=[];modalSubmit=null;document.getElementById('modal-root').replaceChildren();document.getElementById('slash-root').replaceChildren();document.getElementById('toast-root').replaceChildren();slash=null}
+async function cloudApply(data){
+ const generation=localState.generation,original=RepereSync.canonical(db),next=validateDB(data);
+ next.lastExport=db.lastExport;next.updatedAt=stamp();
+ for(const key of ['autoExportMinutes','warnUnexported','theme','elementSections'])next.settings[key]=db.settings[key];
+ const operation=localState.chain.then(async()=>{
+  if(dirty||conflict||generation!==localState.generation||RepereSync.canonical(db)!==original)throw Object.assign(Error('Une modification locale est en cours. Relancez la synchronisation.'),{code:'repere/local'});
+  const saved=await localState.store.save(next,localState.revision,(old,d)=>hasBackupContent(old)&&backupFingerprint(old)!==backupFingerprint(d));localState.revision=saved.revision;localAnnounce();
+  if(generation!==localState.generation||RepereSync.canonical(db)!==original){conflict=true;setSaveState();throw Object.assign(Error('Une saisie a eu lieu pendant la réception. Exportez votre session avant de recharger.'),{code:'repere/local'})}
+  db=next;lastRaw=JSON.stringify(next);cloud.lastCanonical=RepereSync.canonical(db);dirty=false;storageError='';loadError='';invalidateUndo();render();
+ });localState.chain=operation.catch(()=>{});return operation;
+}
+async function cloudPreserve(data,kind){await localState.store.set('conflict:'+kind,{savedAt:stamp(),data})}
+async function cloudReadMeta(){const m=await localState.store.get('sync');return m&&Number.isSafeInteger(m.revision)&&m.revision>=0&&/^[a-f0-9]{64}$/.test(m.hash)?m:null}
+async function cloudSDK(){
+ if(cloud.sdk)return cloud.sdk;
+ if(!cloud.sdkPromise)cloud.sdkPromise=Promise.all([
+  import('https://www.gstatic.com/firebasejs/13.1.0/firebase-app.js'),
+  import('https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js'),
+  import('https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js')
+ ]).then(parts=>Object.assign({},...parts)).catch(e=>{cloud.sdkPromise=null;throw e});
+ return cloud.sdkPromise;
+}
+function cloudTransport(sdk,fire,userId){const epoch=cloud.epoch;return RepereTransport.create({sdk,fire,userId,cache:localState.store,local:()=>db,valid:validateDB,active:()=>epoch===cloud.epoch&&!cloud.locked})}
+async function cloudAuthChanged(user){
+ if(cloud.user&&dirty&&!cloud.locked&&!await persist())cloud.unsaved=JSON.stringify(db);
+ const epoch=++cloud.epoch;clearTimeout(cloud.timer);cloud.unsubscribe?.();cloud.unsubscribe=null;cloud.controller?.stop();cloud.controller=null;
+ cloudSetLocked(true);
+ if(!user||user.uid!==CLOUD_OWNER){
+  cloud.user=null;cloud.view={status:'loading',pending:false,busy:false};
+  db=emptyDB();dirty=false;clearTimeout(saveTimer);cloudResetUI();document.getElementById('sidebar').replaceChildren();document.getElementById('content').replaceChildren();document.getElementById('topbar').replaceChildren();
+  if(user){await cloud.sdk.signOut(cloud.auth);if(epoch!==cloud.epoch)return;}
+  cloudGate(user?'Ce compte n’est pas autorisé pour cet espace.':'');return;
+ }
+ cloud.user=user;cloud.view={status:'loading',pending:true,busy:false};loadError='';storageError='';conflict=false;dirty=false;
+ try{await localLoad();if(cloud.unsaved){db=validateDB(JSON.parse(cloud.unsaved));dirty=true;cloudSetLocked(false);if(await persist())cloud.unsaved=null;cloudSetLocked(true)}}catch(e){db=emptyDB();loadError='La copie IndexedDB ne peut pas être lue. Elle est conservée. Exportez ou restaurez une sauvegarde depuis Réglages.';storageError=e.message}
+ if(epoch!==cloud.epoch)return;
+ exportState=readExportState();cloudResetUI();cloudSetLocked(false);render();
+ const transport=cloudTransport(cloud.sdk,cloud.fire,user.uid);
+ cloud.controller=RepereSync.createController({
+  base:await cloudReadMeta(),local:()=>db,hasContent:hasBackupContent,online:()=>navigator.onLine,
+  blocked:()=>!!(dirty||loadError||storageError||conflict||cloud.locked),editing:cloudEditing,
+  read:()=>transport.read(),write:(p,e)=>transport.write(p,e),apply:cloudApply,preserve:cloudPreserve,
+  saveMeta:meta=>localState.store.set('sync',meta),schedule:cloudSchedule,errorText:cloudError,
+  onState:v=>{
+   if(epoch!==cloud.epoch)return;cloud.view=v;cloudRefresh();
+   if(!v.busy&&v.status==='synced')cloud.retryCount=0;
+   if(!v.busy&&v.status==='offline'&&navigator.onLine&&cloud.retryCount<3)cloudSchedule(60000*2**cloud.retryCount++);
+  }
+ });
+ await cloudRun(false);
+}
+async function cloudInit(){
+ if(!CLOUD_WEB){try{await localLoad()}catch(e){loadError='Impossible d’ouvrir IndexedDB. Les données existantes sont conservées.';storageError=e.message}cloudSetLocked(false);render();return}
+ cloudSetLocked(true);cloudGate();
+ try{
+  cloud.sdk=await cloudSDK();const app=cloud.sdk.initializeApp(FIREBASE_CONFIG);
+  cloud.auth=cloud.sdk.getAuth(app);cloud.auth.languageCode='fr';cloud.fire=cloud.sdk.initializeFirestore(app,{localCache:cloud.sdk.memoryLocalCache()});
+  cloud.sdk.onAuthStateChanged(cloud.auth,user=>cloudAuthChanged(user).catch(e=>{cloudSetLocked(true);cloudGate(cloudError(e))}),e=>cloudGate(cloudError(e)));
+  cloudGate('');
+ }catch(e){cloudGate('Le service de connexion n’a pas pu se charger. Vérifiez votre réseau, puis réessayez.');}
+}
+async function cloudLogin(form){
+ if(!cloud.sdk||cloud.loading)return;
+ if(!form.reportValidity())return;
+ cloud.loading=true;form.querySelector('button[type="submit"]').disabled=true;cloudGateMessage('Connexion en cours…');
+ try{
+  await cloud.sdk.setPersistence(cloud.auth,form.elements.remember.checked?cloud.sdk.browserLocalPersistence:cloud.sdk.browserSessionPersistence);
+  const result=await cloud.sdk.signInWithEmailAndPassword(cloud.auth,form.elements.email.value.trim(),form.elements.password.value);
+  if(result.user.uid!==CLOUD_OWNER){await cloud.sdk.signOut(cloud.auth);cloudGateMessage('Ce compte n’est pas autorisé pour cet espace.');}
+ }catch(e){cloudGateMessage(cloudError(e))}finally{cloud.loading=false;if(document.contains(form))form.querySelector('button[type="submit"]').disabled=false;form.elements.password.value=''}
+}
+async function cloudResetPassword(){
+ const form=document.getElementById('cloud-login-form'),email=form.elements.email;
+ if(!email.reportValidity()||!cloud.sdk||cloud.loading)return;
+ cloud.loading=true;cloudGateMessage('Envoi de la demande…');
+ try{await cloud.sdk.sendPasswordResetEmail(cloud.auth,email.value.trim());cloudGateMessage('Si cette adresse correspond à un compte, un e-mail de réinitialisation vous sera envoyé. Vérifiez également les indésirables.')}catch(e){cloudGateMessage(cloudError(e))}finally{cloud.loading=false}
+}
+function cloudDownload(data,label){validateDB(data);download('Repere_sauvegarde_'+label+'_'+new Date().toISOString().replace(/[:.]/g,'-')+'.json',JSON.stringify(data,null,2));toast('Export déclenché. Vérifiez le fichier dans vos téléchargements.')}
+function cloudChoose(direction){
+ if(cloud.view.busy)return;
+ const observed=cloud.view.remote?.meta||null;
+ const label=direction==='local'?'Conserver la version de cet appareil ?':'Reprendre la version Firebase ?';
+ modal(label,'Le choix concerne toutes les affaires, actions, notes et contacts.',dialogBody('<p>'+esc(direction==='local'?'La copie en ligne sera remplacée après vérification qu’elle n’a pas changé depuis votre choix.':'Les données de cet appareil seront remplacées par la version en ligne.')+'</p><p>Une copie de la version remplacée sera conservée sur cet appareil, accessible dans Compte et synchronisation.</p>',actions('Confirmer le choix')),()=>{closeModal();cloudRun(true,direction,observed).then(ok=>{if(ok)toast('Version retenue et synchronisée.');cloudAccount()})});
+}
+async function cloudSignOut(){
+ if(dirty&&!await persist()){toast('Enregistrement local impossible. Exportez avant de vous déconnecter.');return}
+ if(cloud.view.busy){toast('Une synchronisation est en cours. Attendez sa fin avant de vous déconnecter.');return}
+ const pending=cloudHasPending();
+ modal('Se déconnecter ?',cloud.user?.email||'',dialogBody('<p>'+(pending?'Des modifications ne sont pas encore synchronisées. Elles resteront dans ce navigateur et seront reprises à votre prochaine connexion sur cet appareil. Exportez une sauvegarde avant de partir.':'Votre session sera fermée. La copie locale restera dans ce navigateur pour la prochaine connexion.')+'</p><p class="form-hint">Utilisez un profil de navigateur personnel : cette copie locale n’est pas chiffrée par Repère.</p>',actions('Se déconnecter',btn('Exporter avant de partir','export','download'))),async()=>{closeModal();try{await cloud.sdk.signOut(cloud.auth)}catch(e){toast(cloudError(e))}});
+}
+async function cloudAction(action){
+ try{
+  if(action==='reload'){location.reload();return}
+  if(action==='reset'){await cloudResetPassword();return}
+  if(action==='account'){cloudAccount();return}
+  if(cloud.locked)return;
+  if(action==='retry'){const ok=await persist();if(ok){if(CLOUD_WEB)await cloudRun(true);else toast('Enregistré dans IndexedDB.')}cloudRefresh()}
+  if(action==='signout')await cloudSignOut();
+  if(action==='export-local')exportData();
+  if(action==='export-remote'&&cloud.view.remote)cloudDownload(cloud.view.remote.data,'Firebase');
+  if(action==='choose-local')cloudChoose('local');
+  if(action==='choose-remote')cloudChoose('remote');
+  if(action==='legacy'){
+   const raw=localStorage.getItem('repere-affaires-v1');if(!raw){toast('Aucune ancienne copie sur cette adresse. Exportez un JSON depuis votre ancien fichier local, puis utilisez Importer.');return}
+   closeModal();proposeRestore(JSON.parse(raw),'Anciennes données de ce navigateur · la confirmation remplacera également votre espace synchronisé.');
+  }
+  if(action==='saved-local'||action==='saved-remote'){
+   const saved=await localState.store.get('conflict:'+action.slice(6));if(!saved){toast('Aucune copie remplacée conservée sur cet appareil.');return}cloudDownload(saved.data,'conflit_'+action.slice(6));
+  }
+ }catch(e){toast(cloudError(e))}
+}
+// Registered before the application's document handlers: keyboard shortcuts never act behind login.
+for(const type of ['click','keydown','input','change','submit','focusin','focusout','paste'])document.addEventListener(type,e=>{
+ if(e.target.closest?.('#cloud-gate')){
+  if(type==='submit'){e.preventDefault();cloudLogin(e.target)}
+  if(type==='click'){const b=e.target.closest('[data-cloud]');if(b)cloudAction(b.dataset.cloud)}
+  e.stopImmediatePropagation();return;
+ }
+ if(cloud.locked){e.stopImmediatePropagation();return}
+ if(type==='click'){const b=e.target.closest?.('[data-cloud]');if(b){e.preventDefault();e.stopImmediatePropagation();cloudAction(b.dataset.cloud)}}
+});
+window.addEventListener('online',()=>cloudSchedule());
+window.addEventListener('offline',()=>{if(cloud.user){cloud.view={...cloud.view,status:'offline'};cloudRefresh()}});
+window.addEventListener('pageshow',()=>{if(cloud.auth&&!cloud.auth.currentUser&&CLOUD_WEB)cloudSetLocked(true)});
+
+document.addEventListener('visibilitychange',()=>{if(cloud.locked)return;if(document.visibilityState==='hidden'){persist().then(ok=>{if(ok&&cloud.view.pending)cloudRun(false)})}else if(cloud.user)cloudSchedule()});
+window.addEventListener('pagehide',()=>{if(!cloud.locked&&dirty)persist()});
+document.addEventListener('focusout',()=>{if(cloud.view.status==='remote')cloudSchedule()});
+
 const PHASES={prepa:'Préparation',travaux:'Réalisation',finition:'Finition',clos:'Terminée'}, STATES={todo:'À faire',doing:'En cours',waiting:'En attente',done:'Terminée'}, BLOCK_TYPES=['p','h1','h2','h3','bullet','number','check','quote','callout','divider','table','action','page','project','document','affair-view'];
 const icons={filter:'M3 4h18l-7 8v7l-4 2v-9z',home:'M3 10 12 3l9 7M5 9v12h5v-7h4v7h5V9',folder:'M3 7h7l2 2h9v11H3zM3 7V4h7l2 3h7v2',check:'m5 12 4 4L19 6',tasks:'M9 6h12M9 12h12M9 18h12M3 6h1M3 12h1M3 18h1',clock:'M12 8v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',inbox:'M4 4h16l2 11v5H2v-5zM2 15h6l2 3h4l2-3h6',plus:'M12 5v14M5 12h14',search:'M21 21l-5-5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',chevron:'m9 5 7 7-7 7',down:'m5 9 7 7 7-7',file:'M14 2H5v20h14V7zM14 2v6h5M8 12h8M8 16h6',settings:'M3 6h18M3 12h18M3 18h18M8 3v6M16 9v6M8 15v6',help:'M9 9a3 3 0 1 1 5 2c-1 1-2 1-2 3M12 17h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',download:'M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5',upload:'M12 16V4m-5 5 5-5 5 5M4 17v4h16v-4',arrow:'M4 12h16m-6-6 6 6-6 6',back:'M20 12H4m6-6-6 6 6 6',alert:'m12 3 10 18H2zM12 9v5M12 17h.01',star:'m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z',more:'M5 12h.01M12 12h.01M19 12h.01',edit:'m14 4 6 6M4 20l5-1L21 7l-5-5L4 14z',trash:'M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7',close:'m6 6 12 12M6 18 18 6',menu:'M3 6h18M3 12h18M3 18h18',archive:'M3 3h18v5H3zM5 8v13h14V8M10 12h4',link:'m9 15 6-6M8 16l-2 2a3 3 0 0 1-4-4l5-5a3 3 0 0 1 4 0M16 8l2-2a3 3 0 0 1 4 4l-5 5a3 3 0 0 1-4 0',copy:'M8 8h13v13H8zM16 8V3H3v13h5',calendar:'M3 5h18v16H3zM3 10h18M7 2v6M17 2v6',table:'M3 4h18v16H3zM3 9h18M3 14h18M9 4v16M15 4v16',quote:'M4 5h6v7H4zM10 12c0 4-2 6-5 7M14 5h6v7h-6zM20 12c0 4-2 6-5 7',info:'M12 11v6M12 7h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',leaf:'M20 3C8 2 3 8 5 16c7 6 16 0 15-13ZM3 21 15 9',bolt:'m13 2-9 12h7l-1 8 10-13h-7z',user:'M7 7a5 5 0 1 0 10 0 5 5 0 0 0-10 0M3 22v-3a9 9 0 0 1 18 0v3',print:'M6 9V3h12v6M6 18H3v-8h18v8h-3M6 14h12v8H6z',undo:'M3 10h11a6 6 0 0 1 0 12M3 10l5-5M3 10l5 5',up:'m5 15 7-7 7 7',grip:'M9 5h.01M15 5h.01M9 12h.01M15 12h.01M9 19h.01M15 19h.01'};
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)], esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -1741,7 +2178,7 @@ function contactForm(id='',onSaved=null,name='',company='',classification=null){
 function contactCards(query=''){
  const f=filtersFor('contacts'),q=normalize(query),contacts=db.contacts.filter(c=>(!f.company||(f.company==='__MISSING__'?!c.company:c.company===f.company))&&(!f.type||(f.type==='__MISSING__'?!(c.types||[]).length:(c.types||[]).includes(f.type)))&&(!f.specialty||(c.specialties||[]).includes(f.specialty))&&normalize([c.name,c.company,c.role,c.phone,c.email,contactClassLabel(c)].join(' ')).includes(q)).sort((a,b)=>(a.company||'ZZZ').localeCompare(b.company||'ZZZ','fr')||contactClassLabel(a).localeCompare(contactClassLabel(b),'fr')||a.name.localeCompare(b.name,'fr'));
  const groups=new Map();for(const c of contacts){const name=c.company||'Entreprise non renseignée';if(!groups.has(name))groups.set(name,[]);groups.get(name).push(c)}
- return [...groups.entries()].map(([company,people])=>'<section class="v110-contact-group"><header><h2>'+esc(company)+'</h2><span class="badge">'+people.length+' contact(s)</span></header><div class="v110-contact-grid">'+people.map(c=>'<button class="contact-card" data-act="edit-contact" data-id="'+c.id+'"><span class="avatar">'+esc(c.name.slice(0,1).toUpperCase())+'</span><span class="grow"><strong>'+esc(c.name)+'</strong><span class="badge '+((c.types||[]).length?'blue':'amber')+'">'+esc(contactClassLabel(c))+'</span>'+(c.role?'<small>'+esc(c.role)+'</small>':'')+(c.phone?'<small>'+esc(c.phone)+'</small>':'')+(c.email?'<small>'+esc(c.email)+'</small>':'')+'</span></button>').join('')+'</div></section>').join('')||empty('Aucun interlocuteur','Adaptez les filtres ou créez une fiche complète.');
+ return [...groups.entries()].map(([company,people])=>'<section class="v110-contact-group"><header><h2>'+esc(company)+'</h2><span class="badge">'+people.length+' contact(s)</span><\/header><div class="v110-contact-grid">'+people.map(c=>'<button class="contact-card" data-act="edit-contact" data-id="'+c.id+'"><span class="avatar">'+esc(c.name.slice(0,1).toUpperCase())+'</span><span class="grow"><strong>'+esc(c.name)+'</strong><span class="badge '+((c.types||[]).length?'blue':'amber')+'">'+esc(contactClassLabel(c))+'</span>'+(c.role?'<small>'+esc(c.role)+'</small>':'')+(c.phone?'<small>'+esc(c.phone)+'</small>':'')+(c.email?'<small>'+esc(c.email)+'</small>':'')+'</span></button>').join('')+'</div></section>').join('')||empty('Aucun interlocuteur','Adaptez les filtres ou créez une fiche complète.');
 }
 function renderContacts(){
  return '<div class="page-head"><div><h1>Interlocuteurs</h1><p>Classés par entreprise, type et spécialité. Ces informations filtrent les choix de l’équipe.</p></div>'+btn('Nouvel interlocuteur','new-contact','user','','primary')+'</div>'+filterBar('contacts',filterQuery('contacts','Nom, entreprise, type, coordonnées…')+filterSelect('contacts','company','Entreprise',[['','Toutes les entreprises'],['__MISSING__','Entreprise non renseignée'],...[...new Set(db.contacts.map(c=>c.company).filter(Boolean))].sort().map(v=>[v,v])])+filterSelect('contacts','type','Type',[['','Tous les types'],['__MISSING__','Type non renseigné'],...Object.entries(CONTACT_TYPES)])+filterSelect('contacts','specialty','Spécialité CA',[['','Toutes les spécialités'],...Object.entries(CA_SPECIALTIES)]))+'<div id="contact-results" class="stack">'+contactCards(filtersFor('contacts').query||'')+'</div>';
@@ -1934,7 +2371,7 @@ function synthesisCompanyCards(a,report){
 
 function synthesisActionCard(t,a){
  const tone=t.status==='done'?'done':t.status==='waiting'?'waiting':t.status==='doing'?'active':'todo',people=taskContacts(t).map(c=>c.name).join(', ')||t.contact||'Non renseigné';
- return '<article class="syn-item syn-action'+(synthesisUrgent(t)?' syn-urgent':'')+'" data-tranche="'+esc(itemTranche(t))+'">'+(synthesisUrgent(t)?'<div class="syn-urgent-banner">! ACTION URGENTE</div>':'')+'<header><div><small class="syn-kind">Action</small><h4>'+synthesisText(t.title)+'</h4></div>'+synthesisStatus(STATES[t.status],tone)+'</header><div class="syn-item-meta">'+esc(synthesisScope(t,a.p,a.selection.contexts))+'</div><dl class="syn-facts"><div><dt>Qui</dt><dd>'+esc(people)+'</dd></div><div><dt>Échéance</dt><dd>'+(t.due?fmt(t.due):'Non renseignée')+(t.status!=='done'&&t.due&&t.due<isoToday()?' <b class="syn-alert">En retard</b>':'')+'</dd></div>'+(t.priority==='high'&&t.status==='done'?'<div><dt>Priorité</dt><dd>Urgente · action terminée</dd></div>':'')+(t.followUp?'<div><dt>Relance</dt><dd>'+fmt(t.followUp)+'</dd></div>':'')+'</dl>'+synthesisInformation(t.notes)+'</article>';
+ return '<article class="syn-item syn-action'+(synthesisUrgent(t)?' syn-urgent':'')+'" data-tranche="'+esc(itemTranche(t))+'">'+(synthesisUrgent(t)?'<div class="syn-urgent-banner">! ACTION URGENTE</div>':'')+'<header><div><small class="syn-kind">Action</small><h4>'+synthesisText(t.title)+'</h4></div>'+synthesisStatus(STATES[t.status],tone)+'<\/header><div class="syn-item-meta">'+esc(synthesisScope(t,a.p,a.selection.contexts))+'</div><dl class="syn-facts"><div><dt>Qui</dt><dd>'+esc(people)+'</dd></div><div><dt>Échéance</dt><dd>'+(t.due?fmt(t.due):'Non renseignée')+(t.status!=='done'&&t.due&&t.due<isoToday()?' <b class="syn-alert">En retard</b>':'')+'</dd></div>'+(t.priority==='high'&&t.status==='done'?'<div><dt>Priorité</dt><dd>Urgente · action terminée</dd></div>':'')+(t.followUp?'<div><dt>Relance</dt><dd>'+fmt(t.followUp)+'</dd></div>':'')+'</dl>'+synthesisInformation(t.notes)+'</article>';
 }
 
 
@@ -2029,7 +2466,7 @@ function synthesisEml(mail){
  const boundary='repere_'+uid().replace(/[^a-zA-Z0-9]/g,''),chunks=Array.from(mail.subject.replace(/[\r\n]/g,' ')),subject=[];
  for(let i=0;i<chunks.length;i+=10)subject.push('=?UTF-8?B?'+synthesisBase64(chunks.slice(i,i+10).join(''))+'?=');
  const encoded=text=>synthesisBase64(text).match(/.{1,76}/g)?.join('\r\n')||'';
- return ['X-Unsent: 1','MIME-Version: 1.0','Date: '+new Date().toUTCString(),'Subject: '+subject.join('\r\n '),'Content-Type: multipart/alternative; boundary="'+boundary+'"','','--'+boundary,'Content-Type: text/plain; charset=UTF-8','Content-Transfer-Encoding: base64','',encoded(mail.text),'--'+boundary,'Content-Type: text/html; charset=UTF-8','Content-Transfer-Encoding: base64','',encoded('<!doctype html><html lang="fr"><head><meta charset="utf-8"></head><body>'+mail.html+'</body></html>'),'--'+boundary+'--',''].join('\r\n');
+ return ['X-Unsent: 1','MIME-Version: 1.0','Date: '+new Date().toUTCString(),'Subject: '+subject.join('\r\n '),'Content-Type: multipart/alternative; boundary="'+boundary+'"','','--'+boundary,'Content-Type: text/plain; charset=UTF-8','Content-Transfer-Encoding: base64','',encoded(mail.text),'--'+boundary,'Content-Type: text/html; charset=UTF-8','Content-Transfer-Encoding: base64','',encoded('<!doctype html><html lang="fr"><head><meta charset="utf-8"><\/head><body>'+mail.html+'<\/body></html>'),'--'+boundary+'--',''].join('\r\n');
 }
 
 
@@ -2101,7 +2538,7 @@ function compactToolLink(label,icon,href,action,id='',context='',tranche=''){
 function affairEngineeringCentres(p){return p.entity?[p.entity]:[...new Set((p.companies||[]).map(part=>companyById(part.companyId)).filter(isEdfEntity).map(c=>c.name))]}
 function renderTopbar(labels){
  const p=ui.view==='project'?currentProject():null,key=p?selectedContext():'';
- return '<div class="v117-topbar-start"><button type="button" id="sidebar-toggle" class="icon-btn v117-nav-toggle" data-act="menu" aria-controls="sidebar" aria-label="Afficher la navigation">'+ic('menu',20)+'</button>'+navigationButtons('top')+'<div class="breadcrumb"><strong>'+esc(textLabel(labels[ui.view]||'Aujourd’hui'))+'</strong></div></div><div class="v115-tool-links v117-top-links" aria-label="'+(p?'Liens de l’affaire · '+esc(contextLabel(key)):'Liens généraux')+'">'+sharepointCard(p)+cockpitCard(p,key)+'</div><div class="v117-topbar-actions"><button type="button" class="search-trigger" data-act="search" aria-label="Rechercher partout" title="Rechercher partout (Ctrl K)">'+ic('search',16)+'<span>Rechercher</span><kbd class="kbd">Ctrl K</kbd></button>'+btn('Capturer','capture','inbox','','small')+backupTopButton()+'<details class="v118-menu"><summary class="icon-btn" aria-label="Autres commandes et sauvegardes" title="Autres commandes et sauvegardes">'+ic('more',20)+'</summary><div class="v118-menu-content">'+btn(db.settings.theme==='dark'?'Mode clair':'Mode sombre','toggle-theme','settings','','small')+btn('Commandes / · Ctrl Espace','commands','tasks','','small')+btn('Exporter','export','download','','small')+btn('Importer','import','upload','','small')+'</div></details></div>';
+ return '<div class="v117-topbar-start"><button type="button" id="sidebar-toggle" class="icon-btn v117-nav-toggle" data-act="menu" aria-controls="sidebar" aria-label="Afficher la navigation">'+ic('menu',20)+'</button>'+navigationButtons('top')+'<div class="breadcrumb"><strong>'+esc(textLabel(labels[ui.view]||'Aujourd’hui'))+'</strong></div></div><div class="v115-tool-links v117-top-links" aria-label="'+(p?'Liens de l’affaire · '+esc(contextLabel(key)):'Liens généraux')+'">'+sharepointCard(p)+cockpitCard(p,key)+'</div><div class="v117-topbar-actions"><button type="button" class="search-trigger" data-act="search" aria-label="Rechercher partout" title="Rechercher partout (Ctrl K)">'+ic('search',16)+'<span>Rechercher</span><kbd class="kbd">Ctrl K</kbd></button>'+btn('Capturer','capture','inbox','','small')+cloudTopButton()+backupTopButton()+'<details class="v118-menu"><summary class="icon-btn" aria-label="Autres commandes et sauvegardes" title="Autres commandes et sauvegardes">'+ic('more',20)+'</summary><div class="v118-menu-content">'+btn(db.settings.theme==='dark'?'Mode clair':'Mode sombre','toggle-theme','settings','','small')+btn('Commandes / · Ctrl Espace','commands','tasks','','small')+btn('Exporter','export','download','','small')+btn('Importer','import','upload','','small')+'</div></details></div>';
 }
 function closeMobileNavigation(){ui.mobileNavOpen=false;applySidebarLayout()}
 function toggleSidebar(){
@@ -2197,7 +2634,7 @@ function synthesisEstimatePagesV119(report){
 }
 function synthesisAffairSheet(a,report,index){
  const b=report.config.blocks,m=synthesisMetrics(a,report);
- return '<article class="syn119-sheet syn119-affair"><header class="syn119-head"><h2>'+synthesisText(a.p.title)+'</h2><p>'+esc(a.p.reference||a.p.internalRef)+' · '+esc(synthesisRunText(a))+'</p></header>'+(b.general?(a.p.summary?'<p class="syn119-context">'+synthesisText(a.p.summary)+'</p>':'')+(a.p.entity?'<p>Centre d’ingénierie : '+esc(a.p.entity)+'</p>':''):'')+(b.handover&&a.p.handoverNote?'<section class="syn120-handover"><h3>À savoir pour la reprise</h3><p>'+synthesisText(a.p.handoverNote)+'</p></section>':'')+(b.references?synthesisDossierReferences(a,report):'')+(b.general?synthesisCompactTeam(a,report):'')+(b.companies&&a.companies.length?'<section><h3>Entreprises · responsables et contacts</h3>'+synthesisCompactCompanies(a,report)+'</section>':'')+((b.general||b.elements)&&m.stats.length?'<p class="syn119-progress"><strong>Avancement · </strong>'+esc(synthesisProgressText(a,report))+'</p>':'')+(m.urgent.length||m.late.length?'<p class="syn119-priority-line">'+[m.urgent.length?synthesisCount(m.urgent.length,'action urgente','actions urgentes'):'',m.late.length?synthesisCount(m.late.length,'action en retard','actions en retard'):''].filter(Boolean).join(' · ')+'</p>':'')+(b.actions?'<section><h3>Actions à reprendre · '+a.tasks.length+'</h3>'+(a.tasks.length?synthesisActionsTable(a,report):'<p>Aucune action dans ce périmètre.</p>')+'</section>':'')+(b.elements?'<section><h3>Éléments d’affaire · '+a.elements.length+'</h3>'+synthesisElementsTable(a,report)+(!a.elements.length?'<p>Aucun élément avec ces filtres.</p>':'')+'</section>':'')+(b.links&&a.links.length?'<section><h3>Liens utiles</h3><p class="syn119-links">'+a.links.map(l=>'<a href="'+esc(l.href)+'" target="_blank" rel="noopener noreferrer">'+esc(l.label)+'</a>').join(' · ')+'</p></section>':'')+synthesisReportFooter(report,index)+'</article>';
+ return '<article class="syn119-sheet syn119-affair"><header class="syn119-head"><h2>'+synthesisText(a.p.title)+'</h2><p>'+esc(a.p.reference||a.p.internalRef)+' · '+esc(synthesisRunText(a))+'</p><\/header>'+(b.general?(a.p.summary?'<p class="syn119-context">'+synthesisText(a.p.summary)+'</p>':'')+(a.p.entity?'<p>Centre d’ingénierie : '+esc(a.p.entity)+'</p>':''):'')+(b.handover&&a.p.handoverNote?'<section class="syn120-handover"><h3>À savoir pour la reprise</h3><p>'+synthesisText(a.p.handoverNote)+'</p></section>':'')+(b.references?synthesisDossierReferences(a,report):'')+(b.general?synthesisCompactTeam(a,report):'')+(b.companies&&a.companies.length?'<section><h3>Entreprises · responsables et contacts</h3>'+synthesisCompactCompanies(a,report)+'</section>':'')+((b.general||b.elements)&&m.stats.length?'<p class="syn119-progress"><strong>Avancement · </strong>'+esc(synthesisProgressText(a,report))+'</p>':'')+(m.urgent.length||m.late.length?'<p class="syn119-priority-line">'+[m.urgent.length?synthesisCount(m.urgent.length,'action urgente','actions urgentes'):'',m.late.length?synthesisCount(m.late.length,'action en retard','actions en retard'):''].filter(Boolean).join(' · ')+'</p>':'')+(b.actions?'<section><h3>Actions à reprendre · '+a.tasks.length+'</h3>'+(a.tasks.length?synthesisActionsTable(a,report):'<p>Aucune action dans ce périmètre.</p>')+'</section>':'')+(b.elements?'<section><h3>Éléments d’affaire · '+a.elements.length+'</h3>'+synthesisElementsTable(a,report)+(!a.elements.length?'<p>Aucun élément avec ces filtres.</p>':'')+'</section>':'')+(b.links&&a.links.length?'<section><h3>Liens utiles</h3><p class="syn119-links">'+a.links.map(l=>'<a href="'+esc(l.href)+'" target="_blank" rel="noopener noreferrer">'+esc(l.label)+'</a>').join(' · ')+'</p></section>':'')+synthesisReportFooter(report,index)+'</article>';
 }
 function synthesisElementsTable(a,report){
  const external=synthesisExternal(report.config);
@@ -2228,7 +2665,7 @@ function synthesisCompactTeamV119(a,report){
 function synthesisOverview(report){
  const attention=synthesisAttention(report),contexts=[...new Set(report.affairs.flatMap(a=>a.selection.contexts))];
  const groups=[...new Set(attention.map(x=>x.kind))].map(kind=>{const items=attention.filter(x=>x.kind===kind);return '<li><strong>'+items.length+' · '+esc(items[0].title)+'</strong><span>'+items.slice(0,3).map(x=>esc(x.affair+' — '+x.details)).join('<br>')+(items.length>3?'<br><em>+'+(items.length-3)+' autres : voir les fiches d’affaire.</em>':'')+'</span></li>'}).join('');
- return '<section class="syn119-sheet syn119-overview"><header class="syn119-head"><h1>'+esc(report.title)+'</h1><p>'+esc(report.createdAt)+(report.author?' · '+esc(report.author):'')+' · '+synthesisCount(report.affairs.length,'affaire')+'</p><p>'+esc(contexts.map(contextLabel).join(' / '))+(synthesisExternal(report.config)?' · '+esc(companyById(report.config.companyId)?.name):'')+'</p></header>'+(report.note?'<p class="syn119-intro">'+synthesisText(report.note)+'</p>':'')+'<h2>Vue d’ensemble</h2>'+synthesisOverviewTable(report)+'<h2>Points d’attention</h2>'+(attention.length?'<ul class="syn119-attention">'+groups+'</ul>':'<p>Aucun point d’attention dans le périmètre et les blocs sélectionnés.</p>')+'<p class="syn119-caption">Avancement : éléments applicables des phases affichées, y compris les éléments terminés masqués. Retards et attentes : actions ouvertes du périmètre.</p>'+synthesisReportFooter(report,null)+'</section>';
+ return '<section class="syn119-sheet syn119-overview"><header class="syn119-head"><h1>'+esc(report.title)+'</h1><p>'+esc(report.createdAt)+(report.author?' · '+esc(report.author):'')+' · '+synthesisCount(report.affairs.length,'affaire')+'</p><p>'+esc(contexts.map(contextLabel).join(' / '))+(synthesisExternal(report.config)?' · '+esc(companyById(report.config.companyId)?.name):'')+'</p><\/header>'+(report.note?'<p class="syn119-intro">'+synthesisText(report.note)+'</p>':'')+'<h2>Vue d’ensemble</h2>'+synthesisOverviewTable(report)+'<h2>Points d’attention</h2>'+(attention.length?'<ul class="syn119-attention">'+groups+'</ul>':'<p>Aucun point d’attention dans le périmètre et les blocs sélectionnés.</p>')+'<p class="syn119-caption">Avancement : éléments applicables des phases affichées, y compris les éléments terminés masqués. Retards et attentes : actions ouvertes du périmètre.</p>'+synthesisReportFooter(report,null)+'</section>';
 }
 function synthesisReportFooter(report,index){return '<footer class="syn119-footer">'+(index==null?'Vue d’ensemble':'Affaire '+(index+1)+' sur '+report.affairs.length)+' · Synthèse du '+esc(report.createdAt)+(report.author?' · '+esc(report.author):'')+' · Repère</footer>'}
 function synthesisOverviewTable(report,mail=false){
@@ -2648,7 +3085,7 @@ function affairViewTables(b){const d=affairViewData(b);if(d.missing)return [{tit
 function affairViewTitle(b){const d=affairViewData(b);return (AFFAIR_VIEWS[b.viewKind]?.[0]||'Informations')+' · '+(d.p?.title||'Affaire indisponible')+(d.p&&b.viewKind!=='contacts'?' · '+(d.key==='all'?'Tous les projets':contextLabel(d.key)):'')}
 function affairViewSnapshot(b){const blocks=[newBlock('h2',esc(affairViewTitle(b))),newBlock('p','Copie du '+new Date().toLocaleString('fr-FR')+' · modifiable, sans mise à jour automatique.')];for(const t of affairViewTables(b)){blocks.push(newBlock('h3',esc(t.title)));if(!t.rows.length){blocks.push(newBlock('p','Aucun élément pour ce périmètre.'));continue;}for(let i=0;i<t.rows.length;i+=199)blocks.push({...newBlock('table'),cells:[t.headers.map(esc),...t.rows.slice(i,i+199).map(row=>row.map(value=>cleanHTML(value)))]});}return blocks}
 function affairViewText(b){return affairViewTitle(b)+'\n'+affairViewTables(b).map(t=>t.title+'\n'+t.headers.join(' | ')+'\n'+(t.rows.length?t.rows.map(r=>r.map(plain).join(' | ')).join('\n'):'Aucun élément.')).join('\n\n')}
-function renderAffairView(b){const d=affairViewData(b);if(d.missing)return `<section class="affair-view"><strong>Informations de l’affaire</strong><p>${esc(d.missing)}</p></section>`;const scope=d.key==='all'?d.p.tranche:contextTranche(d.key);return `<section class="affair-view scope-frame" data-tranche="${esc(scope)}"><header><div><span class="badge">${ic('link',12)} Vue liée · à jour</span><h3>${esc(affairViewTitle(b))}</h3></div><button type="button" class="btn small" data-act="edit-affair-view" data-id="${b.id}">${ic('settings',14)} Configurer</button></header>${b.viewKind==='contacts'?'<p class="view-hint">Les contacts sont communs à toute l’affaire.</p>':''}${b.openOnly?'<p class="view-hint">Actions terminées masquées.</p>':''}${affairViewTables(b).map(t=>`<div class="view-table-group"><h4>${esc(t.title)} <span class="badge">${t.rows.length}</span></h4>${t.rows.length?`<div class="table-wrap"><table class="view-data-table"><thead><tr>${t.headers.map(h=>`<th scope="col">${esc(h)}</th>`).join('')}</tr></thead><tbody>${t.rows.map(row=>`<tr>${row.map(cell=>`<td>${cell}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:'<p class="view-hint">Aucun élément pour ce périmètre.</p>'}</div>`).join('')}<footer><span>Les données suivent les modifications de leur source dans Repère.</span><button class="text-button" data-act="project" data-id="${d.p.id}" data-context="${d.key==='all'?d.keys[0]:d.key}">Ouvrir le projet source ${ic('arrow',13)}</button></footer></section>`}
+function renderAffairView(b){const d=affairViewData(b);if(d.missing)return `<section class="affair-view"><strong>Informations de l’affaire</strong><p>${esc(d.missing)}</p></section>`;const scope=d.key==='all'?d.p.tranche:contextTranche(d.key);return `<section class="affair-view scope-frame" data-tranche="${esc(scope)}"><header><div><span class="badge">${ic('link',12)} Vue liée · à jour</span><h3>${esc(affairViewTitle(b))}</h3></div><button type="button" class="btn small" data-act="edit-affair-view" data-id="${b.id}">${ic('settings',14)} Configurer</button><\/header>${b.viewKind==='contacts'?'<p class="view-hint">Les contacts sont communs à toute l’affaire.</p>':''}${b.openOnly?'<p class="view-hint">Actions terminées masquées.</p>':''}${affairViewTables(b).map(t=>`<div class="view-table-group"><h4>${esc(t.title)} <span class="badge">${t.rows.length}</span></h4>${t.rows.length?`<div class="table-wrap"><table class="view-data-table"><thead><tr>${t.headers.map(h=>`<th scope="col">${esc(h)}</th>`).join('')}</tr></thead><tbody>${t.rows.map(row=>`<tr>${row.map(cell=>`<td>${cell}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:'<p class="view-hint">Aucun élément pour ce périmètre.</p>'}</div>`).join('')}<footer><span>Les données suivent les modifications de leur source dans Repère.</span><button class="text-button" data-act="project" data-id="${d.p.id}" data-context="${d.key==='all'?d.keys[0]:d.key}">Ouvrir le projet source ${ic('arrow',13)}</button></footer></section>`}
 function affairViewForm(kind,ctx,blockId=''){
  const current=blockId?currentPage()?.blocks.find(b=>b.id===blockId):null,source=project(current?.ref)||project(ctx.projectId)||db.projects.find(p=>!p.archived)||db.projects[0];if(!source){toast('Créez une affaire pour pouvoir reprendre ses informations.');return}const liveAllowed=ctx.mode==='global'||ctx.mode==='block'||ctx.mode==='rich'&&ctx.row===undefined,selected=current?.viewContext||(kind==='contacts'?'all':resolveContext(source,ctx.contextKey||ctx.tranche));
  commandDialog(()=>{modal('Insérer : '+AFFAIR_VIEWS[kind][0],'Choisissez les informations à reprendre et leur périmètre.',dialogBody(`<div class="form-grid">${select('Affaire source','sourceProject',db.projects.map(p=>[p.id,p.title+(p.archived?' (archivée)':'')]),source.id)}<div id="view-context-fields">${affairViewScopeSelect(source,selected,kind)}</div>${current?'<input type="hidden" name="insertMode" value="live">':select('Insertion','insertMode',liveAllowed?[['live','Vue liée · reste à jour'],['copy','Copie modifiable · à cet instant']]:[['copy','Copie texte · à cet instant']],liveAllowed?'live':'copy')}${['actions','prepa','realisation','finition'].includes(kind)?`<label class="checkbox-field full"><input type="checkbox" name="openOnly" value="yes" ${current?.openOnly?'checked':''}><span>Afficher uniquement les actions non terminées</span></label>`:''}</div><div class="notice mt" id="affair-view-preview"></div><p class="form-hint">La vue liée affiche les données actuelles de Repère. Pour les modifier, ouvrez les fiches liées ou le projet source. La copie est un tableau modifiable dans une note, ou du texte dans un autre champ.</p>`,actions(current?'Mettre à jour':'Insérer les informations')),v=>{const p=project(v.sourceProject);if(!p)throw Error('Choisissez une affaire source.');const key=kind==='contacts'?'all':v.viewContext;if(key!=='all'&&!contextKeys(p).includes(key))throw Error('Choisissez un projet source.');const block={...newBlock('affair-view'),ref:p.id,viewContext:key,viewKind:kind,openOnly:v.openOnly==='yes'};if(current){closeModal();change(()=>{Object.assign(current,{ref:p.id,viewContext:key,viewKind:kind,openOnly:block.openOnly});currentPage().updatedAt=stamp()},'Vue liée mise à jour.');return}let blocks=v.insertMode==='live'&&liveAllowed?[block,newBlock()]:affairViewSnapshot(block);const target=ctx.pageId&&pageById(ctx.pageId);if(target&&target.blocks.length+blocks.length>5000)throw Error('Cette insertion dépasse la capacité de la page. Utilisez une vue liée ou une nouvelle page.');closeModal();if(ctx.mode==='text')insertCommandText(ctx,affairViewText(block));else if(ctx.mode==='rich'&&ctx.row!==undefined)insertCommandHTML(ctx,esc(affairViewText(block)).replace(/\n/g,'<br>'));else deliverBlocks(ctx,blocks);});
@@ -2788,10 +3225,11 @@ function exportData(options={}){
  }catch(e){exportError='Le lancement de l’export a échoué : '+e.message;refreshBackupStatus();toast(exportError);return false}finally{backupBusy=false}
 }
 function autoExportTick(now=Date.now()){
+ if(cloud.locked)return false;
  const minutes=exportMinutes();if(!minutes||backupBusy||loadError||conflict||document.visibilityState==='hidden'||!hasBackupContent())return false;
  if($('#modal-root')?.innerHTML)return false;
  // A cleared or modified main store must never be silently treated as the same session.
- try{if(localStorage.getItem(STORE)!==lastRaw){conflict=true;setSaveState();return false}}catch{}
+ if(!localState.ready||dirty||storageError)return false;
  const latest=readExportState();if(Date.parse(latest.attemptAt)>Date.parse(exportState.attemptAt||'1970-01-01'))exportState=latest;
  if(backupFingerprint()===exportState.fingerprint)return false;
  const last=Date.parse(exportState.attemptAt||db.lastExport),anchor=Number.isFinite(last)&&last<=now?last:exportSessionStarted;
@@ -2813,13 +3251,12 @@ function previousBackupWorthKeeping(raw){try{return hasBackupContent(JSON.parse(
 function protectPreviousBackup(existing,next){
  if(!existing||!previousBackupWorthKeeping(existing))return;
  // Metadata-only saves and empty databases do not replace the last useful previous copy.
- try{if(backupFingerprint(JSON.parse(existing))===backupFingerprint(next))return}catch{return}
- localStorage.setItem(BACKUP,existing);
+ // Previous useful data is kept atomically with workspace changes in IndexedDB.
 }
 
 
 let db=emptyDB(),loadError='',storageError='',lastRaw=null,dirty=false,saveTimer=null,conflict=false;
-try{lastRaw=localStorage.getItem(STORE);if(lastRaw)db=validateDB(JSON.parse(lastRaw))}catch(e){loadError='Les données locales ne peuvent pas être lues. Elles sont conservées : importez une sauvegarde ou restaurez la copie précédente dans Sauvegardes.';storageError=e.message}
+
 let ui={affairMode:readViewPreference('affair-mode','table'),filterPanels:{},elementDetails:{},homeTaskLimit:10,sidebarCollapsed:readSidebarPreference(),mobileNavOpen:false,homeFiltersOpen:false,view:'home',projectId:'',tab:'summary',pageId:'',tranche:'',contextKey:'',filters:{},taskTranche:'',taskFilter:'open',taskProject:'',query:'',affairPhase:'all',affairQuery:''}, undoSnapshot=null,toastTimer=null,slash=null,savedRange=null,lastEditable=null,modalReturn=null,modalSubmit=null,modalBusy=false,modalStack=[],pendingFieldRestore=null,changeDepth=0;
 const project=id=>db.projects.find(p=>p.id===id),currentProject=()=>project(ui.projectId),pageById=id=>pageView(db.pages.find(p=>p.id===id)),currentPage=()=>pageById(ui.pageId);
 const activeProjects=()=>db.projects.filter(p=>!p.archived&&runsFor(p).some(r=>r.phase!=='clos'));
@@ -2844,22 +3281,34 @@ function rankedTaskRows(tasks){let previous=-1;return tasks.map(t=>{const band=t
 function projectHasPhase(p,phase){return phase==='all'||runsFor(p).some(r=>r.phase===phase)}
 function trancheLabel(key){return key==='T1+T2'?'T1 + T2':key||'Non précisée'}
 function trancheBadge(key){return key?`<span class="badge tranche-${esc(key)}">${esc(trancheLabel(key))}</span>`:''}
-function setSaveState(){let e=$('#save-state');if(e){e.className='save-status'+(storageError||loadError||conflict?' error':'');e.innerHTML=`<span class="dot"></span>${storageError||loadError||conflict?'Sauvegarde à vérifier':dirty?'Enregistrement…':'Enregistré dans le navigateur'}`}let banner=$('#save-banner');let msg=loadError||(conflict?'Une autre fenêtre a modifié les données. Exportez cette session avant de recharger la dernière version.':storageError?'L’enregistrement local a échoué. Gardez cette fenêtre ouverte et exportez vos données maintenant.':'');banner.className=msg?'save-banner':'hidden';banner.innerHTML=msg?`<span class="grow">${esc(msg)}</span><button class="btn small" data-act="export">Exporter</button><button class="btn small" data-act="nav" data-view="settings">Sauvegardes</button>`:'';refreshBackupStatus()}
-function persist(){clearTimeout(saveTimer);saveTimer=null;if(loadError||conflict){setSaveState();return false}try{let existing=localStorage.getItem(STORE);if(existing!==lastRaw){conflict=true;setSaveState();return false}prepareRecords(db);db.updatedAt=stamp();const raw=JSON.stringify(db);protectPreviousBackup(existing,db);localStorage.setItem(STORE,raw);lastRaw=raw;dirty=false;storageError='';setSaveState();return true}catch(e){storageError=e.message;dirty=true;setSaveState();return false}}
+function setSaveState(){let e=$('#save-state');if(e){e.className='save-status'+(storageError||loadError||conflict?' error':'');e.innerHTML=`<span class="dot"></span>${storageError||loadError||conflict?'Sauvegarde à vérifier':dirty?'Enregistrement…':'Enregistré dans IndexedDB'}`}let banner=$('#save-banner');let msg=loadError||(conflict?'Une autre fenêtre a modifié les données. Exportez cette session avant de recharger la dernière version.':storageError?'L’enregistrement local a échoué. Gardez cette fenêtre ouverte et exportez vos données maintenant.':'');banner.className=msg?'save-banner':'hidden';banner.innerHTML=msg?`<span class="grow">${esc(msg)}</span><button class="btn small" data-act="export">Exporter</button><button class="btn small" data-act="nav" data-view="settings">Sauvegardes</button>`:'';refreshBackupStatus()}
+function persist(){
+ clearTimeout(saveTimer);saveTimer=null;
+ if(cloud.locked||!localState.ready||loadError||conflict){setSaveState();return Promise.resolve(false)}
+ prepareRecords(db);const snapshot=JSON.parse(JSON.stringify(db)),generation=++localState.generation;snapshot.updatedAt=stamp();dirty=true;setSaveState();
+ const operation=localState.chain.then(async()=>{
+  if(conflict||loadError)return false;
+  try{
+   const saved=await localState.store.save(snapshot,localState.revision,(old,next)=>hasBackupContent(old)&&backupFingerprint(old)!==backupFingerprint(next));
+   localState.revision=saved.revision;lastRaw=JSON.stringify(snapshot);localAnnounce();storageError='';if(generation===localState.generation)dirty=false;cloudChanged();setSaveState();return true;
+  }catch(e){if(e.code==='repere/tab')conflict=true;storageError=e.message;dirty=true;setSaveState();return false}
+ });localState.chain=operation.catch(()=>{});return operation;
+}
 function invalidateUndo(){undoSnapshot=null;const button=$('#toast-action');if(button)button.remove()}
-function queueSave(){if(changeDepth){dirty=true;return}invalidateUndo();dirty=true;clearTimeout(saveTimer);saveTimer=setTimeout(persist,450);setSaveState()}
-function change(fn,message,allowUndo=true){invalidateUndo();if(allowUndo)undoSnapshot=JSON.stringify(db);changeDepth++;try{fn();prepareRecords(db)}finally{changeDepth--}dirty=true;persist();render();if(message)toast(message,allowUndo?'Annuler':null,allowUndo?undo:null)}
+function queueSave(){if(changeDepth){dirty=true;return}invalidateUndo();dirty=true;persist();setSaveState()}
+function change(fn,message,allowUndo=true){if(cloud.locked)return;invalidateUndo();if(allowUndo)undoSnapshot=JSON.stringify(db);changeDepth++;try{fn();prepareRecords(db)}finally{changeDepth--}dirty=true;persist();render();if(message)toast(message,allowUndo?'Annuler':null,allowUndo?undo:null)}
 function undo(){if(!undoSnapshot)return;const before=undoSnapshot;undoSnapshot=null;db=JSON.parse(before);dirty=true;persist();render();toast('Modification annulée.')} 
 function toast(text,label,fn){clearTimeout(toastTimer);$('#toast-root').innerHTML=`<div class="toast"><span>${esc(text)}</span>${label?`<button id="toast-action">${esc(label)}</button>`:''}</div>`;if(label)$('#toast-action').onclick=()=>{$('#toast-root').innerHTML='';fn()};toastTimer=setTimeout(()=>$('#toast-root').innerHTML='',9000)}
 function navigate(view,opts={}){if(dirty)persist();closeSlash();if(view==='project'&&opts.projectId!==ui.projectId&&!opts.contextKey)opts.contextKey='';ui={...ui,view,...opts};ui.mobileNavOpen=false;render();window.scrollTo(0,0)}
 const projectTitle=id=>project(id)?.title||'Affaire supprimée', phaseBadge=p=>`<span class="badge ${p==='prepa'?'blue':p==='travaux'?'amber':'green'}"><span class="dot"></span>${esc(PHASES[p])}</span>`, dueLabel=(d,prefix='')=>d?`<span class="due ${d<isoToday()?'late':d===isoToday()?'today':''}">${prefix}${d===isoToday()?"Aujourd’hui":fmt(d)}</span>`:'', btn=(label,act,icon='plus',extra='',cls='')=>`<button type="button" class="btn ${cls}" data-act="${act}" ${extra}>${ic(icon,15)}${label}</button>`;
 function render(){
+ if(cloud.locked)return;
  applyTheme();setContentScope();
  if(ui.view==='project'&&!currentProject()){ui.view='affairs';ui.projectId=''}
  if(ui.view==='project'){ui.contextKey=selectedContext();ui.tranche=selectedTranche();}
  recordNavigation();
  const waiting=openTasks().filter(t=>t.status==='waiting'), overdue=openTasks().filter(t=>isRequest(t)?requestIsLate(t):t.due&&t.due<isoToday());
- $('#sidebar').innerHTML=`<div class="brand"><span class="brand-logo">${ic('leaf',24)}</span>repère<span class="badge">LOCAL</span></div>${navigationButtons('side')}<div class="workspace-name">Mon espace de travail</div>${[['home','home',"Aujourd’hui",overdue.length],['affairs','folder','Mes affaires',activeProjects().length],['synthesis','file','Synthèses',''],['tasks','tasks','Toutes les actions',''],['waiting','clock','En attente',waiting.length],['inbox','inbox','Captures',db.captures.length],['contacts','user','Interlocuteurs',db.contacts.length],['companies','folder','Entreprises',db.companies.filter(c=>!isEdfEntity(c)).length]].map(([v,i,n,c])=>`<button class="nav-btn ${ui.view===v?'active':''}" data-act="nav" data-view="${v}" aria-current="${ui.view===v?'page':'false'}">${ic(i,18)}${n}${c?`<span class="nav-count ${v==='home'?'late':''}"${v==='home'?` title="${c} action(s) en retard" aria-label="${c} action(s) en retard"`:''}>${c}</span>`:''}</button>`).join('')}<div class="sidebar-line"></div><div class="flex between workspace-name"><span>Affaires récentes</span><button class="icon-btn" data-act="new-project" title="Créer une affaire">${ic('plus',15)}</button></div><div class="project-nav">${db.projects.filter(p=>!p.archived).slice(-7).reverse().map(p=>`<button data-tranche="${esc(p.tranche)}" class="nav-btn scope-frame ${ui.view==='project'&&ui.projectId===p.id?'active':''}" data-act="project" data-id="${p.id}"><span class="project-dot"></span><span class="truncate">${esc(textLabel(p.title))}</span></button>`).join('')||'<p class="muted" style="font-size:12px;padding:8px 11px">Vos affaires apparaîtront ici.</p>'}</div><div class="sidebar-bottom"><button class="nav-btn ${ui.view==='archives'?'active':''}" data-act="nav" data-view="archives">${ic('archive')}Archives</button><button class="nav-btn ${ui.view==='settings'?'active':''}" data-act="nav" data-view="settings">${ic('download')}Réglages</button><button class="nav-btn ${ui.view==='help'?'active':''}" data-act="nav" data-view="help">${ic('help')}Aide</button><div class="profile flex"><span class="avatar">${esc(db.settings.name.slice(0,1).toUpperCase())}</span><div><strong style="font-size:12px">${esc(db.settings.name)}</strong><div id="save-state" class="save-status"></div></div><span class="muted" style="font-size:12px;margin-left:auto">v${VERSION}</span></div></div>`;
+ $('#sidebar').innerHTML=`<div class="brand"><span class="brand-logo">${ic('leaf',24)}</span>repère<span class="badge">${CLOUD_WEB?'COMPTE':'LOCAL'}</span></div>${navigationButtons('side')}<div class="workspace-name">Mon espace de travail</div>${[['home','home',"Aujourd’hui",overdue.length],['affairs','folder','Mes affaires',activeProjects().length],['synthesis','file','Synthèses',''],['tasks','tasks','Toutes les actions',''],['waiting','clock','En attente',waiting.length],['inbox','inbox','Captures',db.captures.length],['contacts','user','Interlocuteurs',db.contacts.length],['companies','folder','Entreprises',db.companies.filter(c=>!isEdfEntity(c)).length]].map(([v,i,n,c])=>`<button class="nav-btn ${ui.view===v?'active':''}" data-act="nav" data-view="${v}" aria-current="${ui.view===v?'page':'false'}">${ic(i,18)}${n}${c?`<span class="nav-count ${v==='home'?'late':''}"${v==='home'?` title="${c} action(s) en retard" aria-label="${c} action(s) en retard"`:''}>${c}</span>`:''}</button>`).join('')}<div class="sidebar-line"></div><div class="flex between workspace-name"><span>Affaires récentes</span><button class="icon-btn" data-act="new-project" title="Créer une affaire">${ic('plus',15)}</button></div><div class="project-nav">${db.projects.filter(p=>!p.archived).slice(-7).reverse().map(p=>`<button data-tranche="${esc(p.tranche)}" class="nav-btn scope-frame ${ui.view==='project'&&ui.projectId===p.id?'active':''}" data-act="project" data-id="${p.id}"><span class="project-dot"></span><span class="truncate">${esc(textLabel(p.title))}</span></button>`).join('')||'<p class="muted" style="font-size:12px;padding:8px 11px">Vos affaires apparaîtront ici.</p>'}</div><div class="sidebar-bottom"><button class="nav-btn ${ui.view==='archives'?'active':''}" data-act="nav" data-view="archives">${ic('archive')}Archives</button><button class="nav-btn ${ui.view==='settings'?'active':''}" data-act="nav" data-view="settings">${ic('download')}Réglages</button><button class="nav-btn ${ui.view==='help'?'active':''}" data-act="nav" data-view="help">${ic('help')}Aide</button><div class="profile flex"><span class="avatar">${esc(db.settings.name.slice(0,1).toUpperCase())}</span><div><strong style="font-size:12px">${esc(db.settings.name)}</strong><div id="save-state" class="save-status"></div></div><span class="muted" style="font-size:12px;margin-left:auto">v${VERSION}</span></div></div>`;
  const labels={synthesis:'Synthèses',home:"Aujourd’hui",affairs:'Mes affaires',tasks:'Toutes les actions',waiting:'En attente',inbox:'Captures',settings:'Réglages',archives:'Archives',help:'Aide',contacts:'Interlocuteurs',companies:'Entreprises',project:currentProject()?.title};
  $('#topbar').innerHTML=renderTopbar(labels);applySidebarLayout();
  const renders={synthesis:renderSynthesis,home:renderHome,affairs:renderAffairs,archives:renderAffairs,tasks:renderTasks,waiting:renderWaiting,inbox:renderInbox,project:renderProject,settings:renderSettings,help:renderHelp,contacts:renderContacts,companies:renderCompanies};
@@ -2938,7 +3387,7 @@ function renderWaiting(){
 function renderInbox(){return `<div class="page-head"><div><h1>Captures</h1><p>Notez maintenant. Rattachez à la bonne affaire quand vous avez un moment.</p></div><span class="badge">${db.captures.length} à classer</span></div><form id="capture-form" class="capture-box"><textarea name="text" required placeholder="Une information, une idée, un appel, un fortuit…" aria-label="Information à capturer"></textarea><div class="flex between"><small>Un point d’entrée pour tout ce qui arrive.</small><button class="btn primary" type="button" data-act="save-capture">${ic('plus',15)}Capturer</button></div></form><div class="stack">${db.captures.map(c=>`<div class="capture-card"><div class="flex between"><small>${new Date(c.createdAt).toLocaleString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</small><button class="icon-btn" data-act="delete-capture" data-id="${c.id}" title="Supprimer">${ic('trash',15)}</button></div><p>${renderText(c.text)}</p><div class="flex wrap">${btn('Créer une action','classify-action','tasks',`data-id="${c.id}"`,'small')}${btn('Demande hors affaire','capture-request','tasks',`data-id="${c.id}"`,'small')}${btn('Classer dans les notes','classify-note','file',`data-id="${c.id}"`,'small')}</div></div>`).join('')||empty('Votre boîte de capture est vide','Vous pouvez aussi capturer une information depuis le bouton en haut à droite.')}</div>`}
 function renderProject(){
  const root=currentProject(),p=currentWork(),tabs=[['summary','folder','Vue d’ensemble'],['elements','check','Éléments d’affaires'],['actions','tasks','Actions'],['notes','file','Notes & pages'],['documents','link','Documents']];
- return '<header class="project-header v118-project-header scope-frame" data-tranche="'+esc(root.tranche)+'"><div class="v118-project-heading"><div class="grow"><h1>'+esc(textLabel(p.title))+'</h1><span class="muted">'+esc(p.reference||p.internalRef)+(p.archived?' · Archivée':'')+'</span></div><div class="flex wrap">'+btn('Synthèse','syn-open','file','data-id="'+p.id+'"','small')+btn('Modifier','edit-project','edit','data-id="'+p.id+'"','small')+btn('Action','new-task','plus','','small primary')+'</div></div><div class="v118-context-line">'+renderTrancheSwitcher(root)+'<details class="v118-menu"><summary class="btn small">Phase : '+esc(PHASES[p.phase])+ic('down',14)+'</summary><div class="v118-menu-content">'+Object.entries(PHASES).map(([key,label])=>'<button class="btn small" data-act="phase" data-phase="'+key+'" '+(key===p.phase?'disabled':'')+'>Passer en '+esc(label.toLowerCase())+'</button>').join('')+'</div></details>'+dueLabel(p.due)+'</div></header><nav class="tabs" role="tablist" aria-label="Sections de l’affaire">'+tabs.map(([key,icon,label])=>'<button id="project-tab-'+key+'" class="tab '+(ui.tab===key?'active':'')+'" data-act="tab" data-tab="'+key+'" role="tab" aria-selected="'+(ui.tab===key)+'" aria-controls="project-tab-panel" tabindex="'+(ui.tab===key?'0':'-1')+'">'+ic(icon,16)+label+'</button>').join('')+'</nav><section id="project-tab-panel" role="tabpanel" aria-labelledby="project-tab-'+ui.tab+'">'+(ui.tab==='summary'?renderSummary(p):ui.tab==='elements'?renderElements(p):ui.tab==='actions'?renderProjectActions(p):ui.tab==='notes'?renderNotes(p):renderDocuments(p))+'</section>';
+ return '<header class="project-header v118-project-header scope-frame" data-tranche="'+esc(root.tranche)+'"><div class="v118-project-heading"><div class="grow"><h1>'+esc(textLabel(p.title))+'</h1><span class="muted">'+esc(p.reference||p.internalRef)+(p.archived?' · Archivée':'')+'</span></div><div class="flex wrap">'+btn('Synthèse','syn-open','file','data-id="'+p.id+'"','small')+btn('Modifier','edit-project','edit','data-id="'+p.id+'"','small')+btn('Action','new-task','plus','','small primary')+'</div></div><div class="v118-context-line">'+renderTrancheSwitcher(root)+'<details class="v118-menu"><summary class="btn small">Phase : '+esc(PHASES[p.phase])+ic('down',14)+'</summary><div class="v118-menu-content">'+Object.entries(PHASES).map(([key,label])=>'<button class="btn small" data-act="phase" data-phase="'+key+'" '+(key===p.phase?'disabled':'')+'>Passer en '+esc(label.toLowerCase())+'</button>').join('')+'</div></details>'+dueLabel(p.due)+'</div><\/header><nav class="tabs" role="tablist" aria-label="Sections de l’affaire">'+tabs.map(([key,icon,label])=>'<button id="project-tab-'+key+'" class="tab '+(ui.tab===key?'active':'')+'" data-act="tab" data-tab="'+key+'" role="tab" aria-selected="'+(ui.tab===key)+'" aria-controls="project-tab-panel" tabindex="'+(ui.tab===key?'0':'-1')+'">'+ic(icon,16)+label+'</button>').join('')+'</nav><section id="project-tab-panel" role="tabpanel" aria-labelledby="project-tab-'+ui.tab+'">'+(ui.tab==='summary'?renderSummary(p):ui.tab==='elements'?renderElements(p):ui.tab==='actions'?renderProjectActions(p):ui.tab==='notes'?renderNotes(p):renderDocuments(p))+'</section>';
 }
 function renderSummary(p){
  const root=project(p.id),n=nextTask(p),wait=ptasks(p.id,p.contextKey).filter(t=>t.status==='waiting').sort(taskSort),pages=db.pages.filter(q=>inScope(q,p)).map(pageView);
@@ -2949,10 +3398,10 @@ function renderNotes(p){let pages=db.pages.filter(q=>inScope(q,p)).map(pageView)
 function renderBlock(b,i,q){const editable=(tag='div',extra='')=>`<${tag} class="editable" contenteditable="true" data-block="${b.id}" data-placeholder="${b.type==='p'?'Écrivez, ou tapez / pour insérer un bloc…':b.type==='check'?'À faire…':'Écrivez ici…'}" ${extra}>${cleanHTML(b.html)}</${tag}>`;let content='';if(b.type==='affair-view')content=renderAffairView(b);if(['p','h1','h2','h3'].includes(b.type))content=editable(b.type==='p'?'div':b.type);else if(['bullet','number','check'].includes(b.type)){let number=1;if(b.type==='number')for(let j=i-1;j>=0&&q.blocks[j].type==='number';j--)number++;content=`<div class="block-list">${b.type==='check'?`<input type="checkbox" class="block-check" data-change="block-check" data-id="${b.id}" ${b.checked?'checked':''} aria-label="Cocher cette ligne">`:`<span class="bullet-marker">${b.type==='bullet'?'•':number+'.'}</span>`}${editable()}</div>`}else if(b.type==='quote')content=`<blockquote>${editable()}</blockquote>`;else if(b.type==='callout')content=`<div class="block-callout">${ic('info',18)}${editable()}</div>`;else if(b.type==='divider')content='<hr>';else if(b.type==='table')content=`<div class="table-wrap"><table class="note-table"><tbody>${b.cells.map((row,r)=>`<tr>${row.map((cell,c)=>`<${r===0?'th':'td'}><div class="editable" contenteditable="true" data-block="${b.id}" data-row="${r}" data-col="${c}" aria-label="Ligne ${r+1}, colonne ${c+1}">${cleanHTML(cell)}</div></${r===0?'th':'td'}>`).join('')}</tr>`).join('')}</tbody></table></div><div class="table-tools"><button data-act="table-row" data-id="${b.id}">+ Ligne</button><button data-act="table-col" data-id="${b.id}">+ Colonne</button><button data-act="table-options" data-id="${b.id}">Modifier la structure…</button></div>`;else if(b.type==='action'){let t=db.tasks.find(t=>t.id===b.ref);content=t?`<div class="block-link scope-frame" data-tranche="${esc(itemTranche(t))}">${ic('tasks',17)}<span class="badge">Action</span><button class="task-title grow" data-act="edit-task" data-id="${t.id}">${esc(textLabel(t.title))}</button>${contextBadges(itemContexts(t))}<span class="badge ${t.status==='done'?'green':t.status==='waiting'?'amber':''}">${STATES[t.status]}</span></div>`:'<div class="block-link muted">Action supprimée</div>'}else if(b.type==='page'){let p=pageById(b.ref);content=p?`<div class="block-link scope-frame" data-tranche="${esc(pageScope(p))}">${ic(pageIsSynced(p)?'link':'file',18)}<button class="task-title grow" data-act="open-page" data-id="${p.id}">${esc(textLabel(p.title))}</button>${ic('chevron',15)}</div>`:'<div class="block-link muted">Page supprimée</div>'}if(['project','document'].includes(b.type)){const r=referenceData(b.type,b.ref);content=r?`<div class="block-link scope-frame" data-tranche="${esc(scopeFor(b.type,r.item))}">${ic(r.icon,18)}${referenceHTML(b.type,b.ref)}${ic('chevron',15)}</div>`:'<div class="block-link muted">Lien indisponible : élément supprimé</div>'}return `<div class="block ${b.checked?'checked':''}" data-block-wrap="${b.id}"><div class="block-handle"><button class="icon-btn" data-act="slash-after" data-id="${b.id}" title="Insérer un bloc après">+</button><button class="icon-btn" data-act="block-options" data-id="${b.id}" title="Déplacer, dupliquer ou supprimer ce bloc">${ic('grip',14)}</button></div>${content}</div>`}
 const DOC_STATUS={prepare:'À préparer',doing:'En cours',review:'À valider',ok:'Validé'};
 function renderDocuments(p){const f=filtersFor('documents');let docs=db.documents.filter(d=>inScope(d,p)&&(!f.status||d.status===f.status)&&(!f.category||d.category===f.category)&&normalize([d.title,d.category,d.path,d.notes].join(' ')).includes(normalize(f.query)));return `<div class="toolbar"><p class="muted grow" style="font-size:12px">Les références utiles : liens internes, chemins de fichiers et suivi documentaire.</p>${btn('Ajouter un document','new-document','plus','','primary')}</div>${filterBar('documents',filterQuery('documents','Titre, référence, commentaire…')+filterSelect('documents','status','Statut',[['','Tous les statuts'],...Object.entries(DOC_STATUS)])+filterSelect('documents','category','Catégorie',[['','Toutes les catégories'],...[...new Set(db.documents.filter(d=>inScope(d,p)).map(d=>d.category).filter(Boolean))].sort().map(v=>[v,v])]),docs.length)}<section class="panel">${docs.map(d=>`<div class="doc-row scope-frame" data-tranche="${esc(itemTranche(d))}"><span class="affair-icon">${ic('file')}</span><div class="grow"><div class="flex wrap"><button class="task-title" data-act="edit-document" data-id="${d.id}">${esc(textLabel(d.title))}</button><span class="badge ${d.status==='ok'?'green':d.status==='review'?'amber':'blue'}">${DOC_STATUS[d.status]}</span>${d.category?`<small>${esc(d.category)}</small>`:''}</div>${d.notes?`<p class="muted" style="font-size:12px;margin-top:7px;white-space:pre-wrap">${renderText(d.notes)}</p>`:''}${d.path?`<div class="path">${safeHref(d.path)?`<a href="${esc(safeHref(d.path))}" target="_blank" rel="noopener noreferrer">${esc(d.path)}</a>`:esc(d.path)}</div><button class="copy-path" data-act="copy-document" data-id="${d.id}">${ic('copy',12)} Copier ${safeHref(d.path)?'le lien':'le chemin'}</button>`:'<small>Aucun lien ou chemin renseigné</small>'}</div><div>${dueLabel(d.due)}<button class="icon-btn" data-act="edit-document" data-id="${d.id}" title="Modifier">${ic('edit',15)}</button></div></div>`).join('')||empty('Les documents, au bon endroit','Ajoutez un lien SharePoint, une référence documentaire ou le chemin d’un fichier de votre ordinateur.')}</section><div class="notice mt">Les fichiers restent à leur emplacement d’origine. Pour un chemin local ou réseau, utilisez « Copier le chemin », puis collez-le dans l’Explorateur Windows. Le navigateur peut empêcher l’ouverture directe.</div>`}
-function renderSettings(){return `<div class="page-head"><div><h1>Réglages</h1><p>Votre espace est local. Une sauvegarde exportée permet de le retrouver.</p></div></div><div class="settings-grid">${backupSettingsPanel()}<section class="panel"><div class="panel-head"><h2>Importer une sauvegarde</h2>${ic('upload')}</div><div class="panel-body stack"><p class="muted" style="font-size:13px">Sélectionnez un fichier JSON exporté par Repère. Vérifiez le nombre d’affaires, d’actions et de pages, puis confirmez la restauration. L’import remplace les données actuelles ; il ne les fusionne pas.</p>${btn('Choisir un fichier JSON','import','upload')}<small>L’application propose d’exporter les données actuelles avant la restauration.</small><button class="text-button" data-act="recover">Restaurer la copie locale précédente…</button></div></section><section class="panel"><div class="panel-head"><h2>Mon espace</h2>${ic('user')}</div><form id="settings-form" class="panel-body stack"><label class="field">Prénom<input class="input" name="name" maxlength="50" required value="${esc(db.settings.name)}"></label>${select('Apparence','theme',[['light','Mode clair'],['dark','Mode sombre']],db.settings.theme)}<button class="btn" type="button" data-act="save-settings">Enregistrer</button><div class="notice">CA électrique : ${esc(db.contacts.find(c=>c.id===db.settings.selfContactId)?.name||"Ma fiche à renseigner")}</div>${btn("Choisir ma fiche","v110-self","user","","small")}<div class="flex wrap"><span class="badge">${db.projects.length} affaires</span><span class="badge">${db.pages.length} pages</span><span class="badge">${db.tasks.length} actions</span><span class="badge">${(new Blob([JSON.stringify(db)]).size/1024).toFixed(0)} Ko de données</span></div></form></section><section class="panel"><div class="panel-head"><h2>À savoir</h2>${ic('info')}</div><div class="panel-body manual"><p>L’application fonctionne sans connexion et sans bibliothèque externe. Elle n’envoie aucune donnée. Les liens que vous ouvrez vous amènent vers les ressources indiquées.</p><p><strong>Conservez le même fichier HTML, au même emplacement, et utilisez le même navigateur et le même profil.</strong> Les données sont enregistrées dans ce navigateur, pas dans le fichier HTML. L’effacement des données du navigateur ou un changement d’emplacement peut les rendre inaccessibles.</p><p>En navigation privée, les données peuvent disparaître à la fermeture. Les exports JSON sont votre sauvegarde transportable. Les documents eux-mêmes ne sont pas inclus.</p></div></section></div>${renderElementCatalogue()}`}
+function renderSettings(){return `<div class="page-head"><div><h1>Réglages</h1><p>Connexion, synchronisation et sauvegardes de votre espace.</p></div></div><div class="settings-grid">${cloudPanel()}${backupSettingsPanel()}<section class="panel"><div class="panel-head"><h2>Importer une sauvegarde</h2>${ic('upload')}</div><div class="panel-body stack"><p class="muted" style="font-size:13px">Sélectionnez un fichier JSON exporté par Repère. Vérifiez le nombre d’affaires, d’actions et de pages, puis confirmez la restauration. L’import remplace les données actuelles ; il ne les fusionne pas. En mode connecté, cette modification sera également synchronisée sur vos autres appareils.</p>${btn('Choisir un fichier JSON','import','upload')}<small>L’application propose d’exporter les données actuelles avant la restauration.</small><button class="text-button" data-act="recover">Restaurer la copie locale précédente…</button></div></section><section class="panel"><div class="panel-head"><h2>Mon espace</h2>${ic('user')}</div><form id="settings-form" class="panel-body stack"><label class="field">Prénom<input class="input" name="name" maxlength="50" required value="${esc(db.settings.name)}"></label>${select('Apparence','theme',[['light','Mode clair'],['dark','Mode sombre']],db.settings.theme)}<button class="btn" type="button" data-act="save-settings">Enregistrer</button><div class="notice">CA électrique : ${esc(db.contacts.find(c=>c.id===db.settings.selfContactId)?.name||"Ma fiche à renseigner")}</div>${btn("Choisir ma fiche","v110-self","user","","small")}<div class="flex wrap"><span class="badge">${db.projects.length} affaires</span><span class="badge">${db.pages.length} pages</span><span class="badge">${db.tasks.length} actions</span><span class="badge">${(new Blob([JSON.stringify(db)]).size/1024).toFixed(0)} Ko de données</span></div></form></section><section class="panel"><div class="panel-head"><h2>À savoir</h2>${ic('info')}</div><div class="panel-body manual"><p>Le fichier ouvert directement sur votre ordinateur reste local. La version Web utilise Firebase après connexion pour synchroniser vos données. Les documents liés restent dans leur emplacement d’origine.</p><p><strong>Conservez le même fichier HTML, au même emplacement, et utilisez le même navigateur et le même profil.</strong> Les données sont enregistrées dans ce navigateur, pas dans le fichier HTML. L’effacement des données du navigateur ou un changement d’emplacement peut les rendre inaccessibles.</p><p>En navigation privée, les données peuvent disparaître à la fermeture. Les exports JSON sont votre sauvegarde transportable. Les documents eux-mêmes ne sont pas inclus.</p></div></section></div>${renderElementCatalogue()}`}
 function renderHelp(){const groups=[['Créer une synthèse','Ouvrez Synthèses dans le menu, ou le bouton Synthèse d’une affaire. Sélectionnez les affaires, projets TEM / AT, entreprises et blocs. DIPDE/CNEPE restent dans les informations générales. PDF / Imprimer ouvre l’impression du navigateur : choisissez Enregistrer au format PDF. Préparer un e-mail permet de copier les blocs mis en forme ou de télécharger un brouillon .eml, sans envoi automatique.'],['Prendre le bon départ','Créez une affaire, renseignez son contexte et ajoutez une action précise. La prochaine action est choisie selon son échéance et son urgence. L’étoile sert de favori à urgence et échéance égales. Complétez l’équipe et rattachez les entreprises, puis ajoutez les éléments adaptés au dossier dans Éléments d’affaires.'],['Séparer action et note','Une action a un statut, une échéance et éventuellement une relance. Une case à cocher dans une note sert à la prise de notes et ne remonte pas au tableau de bord. Utilisez /action ou /suivi pour rattacher une action existante à la page, ou en créer une si nécessaire. Son statut reste synchronisé avec le suivi de l’action.'],['Suivre une attente','Passez une action en « En attente », indiquez qui doit répondre et quand relancer. « Relancer » consigne votre suivi et décale le rappel ; il n’envoie aucun message. « Réponse reçue » vous laisse décider si l’action est terminée ou doit reprendre.'],['Les contacts de l’affaire','Dans Notes & pages, ouvrez Contacts de l’affaire pour ajouter des interlocuteurs et consulter leurs coordonnées. Chaque fiche est conservée dans le répertoire général, commun à toutes les affaires. Avec @, recherchez par nom ou entreprise. Cochez les personnes voulues, ou utilisez Tout sélectionner, puis Insérer (Ctrl + Entrée). Vous pouvez aussi créer une fiche complète : nom, entreprise, fonction, téléphone et e-mail. Dans une action, les personnes sélectionnées sont ajoutées aux interlocuteurs déjà affectés. Modifier une fiche met à jour ses coordonnées dans toutes les affaires.'],['Reprendre les informations d’une affaire','Tapez /affaire/ pour afficher les raccourcis Contacts, Actions, Préparation, Réalisation, Finalisation, Éléments d’affaires, Documents, Attentes, Échéances, Synthèse et Liens. Choisissez l’affaire source et le projet TEM / AT, ou toute l’affaire. La vue liée reste à jour ; la copie modifiable conserve les données au moment de l’insertion. Dans un champ de texte ou une cellule, l’insertion est une copie texte. /affaire/contactes fonctionne aussi.'],['Accéder à Cockpit CA','Le bouton Cockpit CA de Aujourd’hui utilise votre lien général. Dans une affaire, chaque projet T1/T2 × TEM/AT possède sa propre adresse, réglable avec Ajouter le lien ou Modifier le lien. /cockpit insère l’adresse du projet, /cockpit-general celle de Aujourd’hui. Il s’agit de liens, sans synchronisation avec Cockpit CA.'],['Organiser les pages','Chaque affaire possède ses pages. Le + à droite d’une page crée une sous-page. Le menu ··· permet de déplacer une page sous une autre, la dupliquer ou l’imprimer. La recherche Ctrl K parcourt aussi le contenu des tableaux.'],['Écrire avec les blocs','Tapez / dans vos notes, champs de texte et captures, ou utilisez le bouton / Commandes et Ctrl + Espace. Tapez @ pour chercher des interlocuteurs, notamment par entreprise, ou en créer un. Dans le menu /, les flèches puis Entrée valident une commande. Dans le menu @, Entrée coche une personne et Ctrl + Entrée insère la sélection. Échap ferme le menu. Entrée crée le bloc suivant ; Maj + Entrée fait un retour à la ligne. Dans un tableau, Tab passe à la cellule suivante et crée une ligne en fin de tableau.'],['Les projets TEM / AT','Une affaire regroupe jusqu’à quatre projets : T1 TEM, T1 AT, T2 TEM et T2 AT. TEM signifie tranche en marche ; AT signifie arrêt de tranche. Choisissez les projets dans Modifier ou Gérer TEM / AT. Chacun a sa préparation, sa réalisation, sa finition, ses dates et ses éléments. Les éléments transverses sont communs à toute cette affaire. Les anciennes données restent à préciser : attribuez chaque suivi existant à TEM ou AT pour conserver tout son contenu. Les éléments transverses et de réalisation sont ajoutés au départ. Complétez les autres phases selon votre dossier.'],['Actions communes et pages synchronisées','Cochez plusieurs projets dans une action pour partager son statut, son échéance et ses relances. Créez des actions distinctes pour suivre des réalisations indépendantes. Avec /page, une page peut être synchronisée entre projets ; son contenu reste commun. Les contacts et le dossier SharePoint appartiennent à toute l’affaire.'],['Retrouver avec les filtres','Les filtres se combinent : tranche, TEM / AT et phase doivent correspondre au même projet. Une action partagée apparaît une seule fois dans Toutes les actions. Filtrez aussi par urgence, interlocuteur, statut ou échéance ; les attentes par date de relance ; les documents par statut et catégorie ; les contacts par entreprise. Réinitialiser retire les filtres de la vue. Ils restent actifs pendant cette session.'],['Suivre la réalisation et gagner en lisibilité','L’accueil de l’affaire affiche le taux de réalisation des éléments applicables de chaque phase. Les actions sont comptées séparément. Tout terminer et Remettre à faire agissent sur les éléments de la section après confirmation ; les éléments communs restent partagés. Annuler permet de revenir en arrière. T1 est en bleu, T2 en vert, et les éléments communs portent un cadre bleu et vert. Le bouton Sombre / Clair en haut de l’écran mémorise votre préférence.'],['Retrouver les archives','Une affaire archivée ou terminée quitte les actions du quotidien. Ses notes et actions restent accessibles dans le dossier et dans la recherche. L’archivage se fait avec le bouton Modifier de l’affaire.']];return `<div class="page-head"><div><h1>Votre espace, en pratique</h1><p>Un outil simple à ouvrir, assez souple pour accompagner vos dossiers.</p></div><span class="badge green">Version ${VERSION}</span></div><div class="settings-grid"><section class="panel"><div class="panel-body manual">${groups.map(([t,b])=>`<div><h3>${t}</h3><p>${b}</p></div>`).join('')}</div></section><div class="stack"><section class="panel"><div class="panel-head"><h2>Commandes /</h2></div><div class="panel-body"><p class="muted" style="font-size:12px">Tapez une partie du nom : « tab », « réunion », « action »…</p><table class="help-table">${COMMANDS.map(c=>`<tr><td><code>/${esc(c.command)}</code><br>${esc(c.label)}</td><td style="color:var(--muted);text-align:left;padding-left:15px">${esc(c.desc)}</td></tr>`).join('')}</table></div></section><section class="panel"><div class="panel-head"><h2>Raccourcis clavier</h2></div><div class="panel-body"><table class="help-table">${[['Rechercher partout','Ctrl K'],['Gras / italique / souligné','Ctrl B / I / U'],['Sauvegarde JSON','Ctrl S'],['Commandes partout','Ctrl Espace /'],['Interlocuteurs / entreprise','@'],['Insérer les contacts cochés','Ctrl Entrée'],['Bloc suivant','Entrée'],['Retour à la ligne','Maj Entrée'],['Naviguer dans un tableau','Tab / Maj Tab'],['Fermer un menu','Échap']].map(([a,b])=>`<tr><td>${a}</td><td><kbd class="kbd">${b}</kbd></td></tr>`).join('')}</table></div></section></div></div>`}
 function suspendModal(){const host=$('#modal-root');if(!host.firstChild)return;modalStack.push({nodes:[...host.childNodes],submit:modalSubmit,returnTo:modalReturn});host.replaceChildren();modalSubmit=null;modalReturn=null}
-function closeModal(){closeSlash();const old=$('#modal-root'),returnTo=modalReturn;old.replaceChildren();modalSubmit=null;modalReturn=null;const previous=modalStack.pop();if(previous){old.replaceChildren(...previous.nodes);modalSubmit=previous.submit;modalReturn=previous.returnTo}if(returnTo&&document.contains(returnTo))returnTo.focus()}
+function closeModal(){closeSlash();const old=$('#modal-root'),returnTo=modalReturn;old.replaceChildren();modalSubmit=null;modalReturn=null;const previous=modalStack.pop();if(previous){old.replaceChildren(...previous.nodes);modalSubmit=previous.submit;modalReturn=previous.returnTo}if(returnTo&&document.contains(returnTo))returnTo.focus();if(cloud.view.status==='remote')cloudSchedule()}
 function commandDialog(open){suspendModal();open()}
 function showFormError(form,message){let box=form?.querySelector('[data-form-error]');if(box){box.textContent=message;box.classList.remove('hidden')}else toast(message)}
 function formValues(form){
@@ -3036,8 +3485,8 @@ function searchData(query){let q=normalize(query.trim());if(!q)return [];let res
 function searchDialog(){modal('Rechercher partout','Affaires, notes, tableaux, actions, documents, interlocuteurs et captures.',`<input class="input" id="global-search" placeholder="Un mot, une référence, un interlocuteur…" aria-label="Recherche globale"><div id="search-results" class="search-results"><p class="muted" style="font-size:12px;padding:15px 0">Commencez à écrire pour retrouver une information.</p></div>`,null,true);$('#global-search').oninput=e=>{let list=searchData(e.target.value);$('#search-results').innerHTML=list.length?list.map(r=>`<button class="search-result" data-act="search-open" data-type="${r.type}" data-id="${r.id}">${ic(r.icon,18)}<span><strong>${esc(type==='task'?taskOwnerLabel(item):r.title)}</strong><small>${esc(type==='task'?textLabel(item.title)+' · '+itemScopeLabel(item):r.sub)}</small></span></button>`).join(''):'<p class="muted" style="font-size:12px;padding:15px 0">Aucun résultat.</p>'};$('#global-search').onkeydown=e=>{if(e.key==='Enter'){$('#search-results button')?.click()}if(e.key==='ArrowDown'){e.preventDefault();$('#search-results button')?.focus()}}}
 function download(name,text,type='application/json'){const blob=new Blob([text],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000)}
 
-function proposeRestore(data,label){let d;try{d=validateDB(data)}catch(e){toast('Import refusé : '+e.message);return}modal('Restaurer cette sauvegarde ?',label,dialogBody(`<div class="flex wrap mb"><span class="badge">${d.projects.length} affaires</span><span class="badge">${d.tasks.length} actions</span><span class="badge">${d.pages.length} pages</span><span class="badge">${d.documents.length} documents</span><span class="badge">${d.companies.length} entreprises</span><span class="badge">${d.elements.length} éléments</span><span class="badge">${d.captures.length} captures</span></div><div class="notice warn">La restauration remplace les données de cette session. Exportez d’abord vos données actuelles si vous souhaitez les conserver.</div>`,`<div class="form-actions wrap"><button class="btn" id="export-before">Exporter les données actuelles</button><button class="btn" data-act="close-modal">Annuler</button><button class="btn primary" id="restore-confirm">Remplacer et restaurer</button></div>`));$('#export-before').onclick=exportData;$('#restore-confirm').onclick=()=>{try{lastRaw=localStorage.getItem(STORE);loadError='';conflict=false;db=d;dirty=true;ui={...ui,view:'home',projectId:'',pageId:''};closeModal();const ok=persist();render();toast(ok?'Sauvegarde restaurée.':'Données chargées en mémoire ; l’enregistrement local a échoué.')}catch(e){toast('Restauration impossible : '+e.message)}}}
-function recoverData(){try{const r=localStorage.getItem(BACKUP);if(!r){toast('Aucune copie précédente disponible.');return}proposeRestore(JSON.parse(r),'Copie locale de l’enregistrement précédent.')}catch(e){toast('La copie précédente ne peut pas être lue.')}}
+function proposeRestore(data,label){let d;try{d=validateDB(data)}catch(e){toast('Import refusé : '+e.message);return}modal('Restaurer cette sauvegarde ?',label,dialogBody(`<div class="flex wrap mb"><span class="badge">${d.projects.length} affaires</span><span class="badge">${d.tasks.length} actions</span><span class="badge">${d.pages.length} pages</span><span class="badge">${d.documents.length} documents</span><span class="badge">${d.companies.length} entreprises</span><span class="badge">${d.elements.length} éléments</span><span class="badge">${d.captures.length} captures</span></div><div class="notice warn">La restauration remplace les données de cette session. En mode connecté, ce remplacement sera synchronisé sur les autres appareils. Exportez d’abord vos données actuelles si vous souhaitez les conserver.</div>`,`<div class="form-actions wrap"><button class="btn" id="export-before">Exporter les données actuelles</button><button class="btn" data-act="close-modal">Annuler</button><button class="btn primary" id="restore-confirm">Remplacer et restaurer</button></div>`));$('#export-before').onclick=exportData;$('#restore-confirm').onclick=async()=>{try{await localState.chain;const current=await localState.store.get('workspace');localState.revision=current?.revision||0;localState.ready=true;loadError='';conflict=false;db=d;dirty=true;ui={...ui,view:'home',projectId:'',pageId:''};closeModal();const ok=await persist();render();toast(ok?'Sauvegarde restaurée.':'Données chargées en mémoire ; l’enregistrement local a échoué.')}catch(e){toast('Restauration impossible : '+e.message)}}}
+async function recoverData(){try{const r=(await localState.store.get('workspace'))?.previous;if(!r){toast('Aucune copie précédente disponible.');return}proposeRestore(r,'Copie IndexedDB de l’enregistrement précédent.')}catch(e){toast('La copie précédente ne peut pas être lue.')}}
 function loadDemo(){confirmDialog('Explorer une affaire fictive','Une affaire d’exemple sera ajoutée à votre espace. Vos dossiers actuels seront conservés. Vous pourrez ensuite archiver ou supprimer cet exemple.',()=>{change(()=>{let p={id:uid(),title:'Préparation d’une intervention',reference:'EXEMPLE-001',site:'',tranche:'T1',phase:'prepa',due:addDays(15),summary:'Exemple fictif pour découvrir Repère.\nObjectif : préparer une intervention, suivre les validations et conserver les décisions au même endroit.',archived:false,demo:true,nextTask:'',createdAt:stamp(),checks:checklistTemplate()};p.checks[0].status='done';p.checks[1].status='doing';db.projects.push(p);for(const [title,status,due,contact,followUp] of [['Compléter les points ouverts du PDS','todo',addDays(0),'',''],['Obtenir le retour sur la logistique','waiting',addDays(3),'Interlocuteur de démonstration',isoToday()],['Préparer la réunion de lancement','doing',addDays(2),'','']]){let t={id:uid(),projectId:p.id,tranche:'T1',title,status,due,contact,followUp,phase:'prepa',priority:'normal',kind:'action',notes:'Donnée fictive, à remplacer pour votre utilisation.',createdAt:stamp(),history:[]};db.tasks.push(t);if(!p.nextTask)p.nextTask=t.id}let q={id:uid(),projectId:p.id,tranche:'T1',parentId:'',title:'Commencez ici',createdAt:stamp(),updatedAt:stamp(),blocks:[newBlock('callout','Cet exemple est fictif. Vous pouvez tout modifier pour tester.'),newBlock('h2','Un espace qui garde le fil'),newBlock('p','Vous pouvez écrire en <b>gras</b>, en <i>italique</i> et créer des sous-pages. Tapez <b>/</b> dans le bloc vide ci-dessous pour découvrir les commandes.'),newBlock(),newBlock('h3','Mes points à vérifier'),newBlock('check','Confirmer les participants à la réunion'),newBlock('check','Retrouver la dernière version des documents'),newBlock('table')]};db.pages.push(q);db.pages.push({id:uid(),projectId:p.id,tranche:'T1',parentId:q.id,title:'Réunion de lancement',createdAt:stamp(),updatedAt:stamp(),blocks:templateBlocks('meeting')});db.documents.push({id:uid(),projectId:p.id,tranche:'T1',title:'PDS — document de démonstration',category:'PDS',status:'doing',path:'C:\\Affaires\\EXEMPLE-001\\PDS.docx',due:addDays(5),notes:'Chemin fictif : remplacez-le par un vrai lien ou chemin.'});ensureContexts(p);configureContexts(p,['T1_TEM'],{T1:'T1_TEM'});ui={...ui,view:'project',projectId:p.id,tab:'notes',pageId:q.id,contextKey:'T1_TEM',tranche:'T1'}},'Exemple ajouté.')},'Ajouter l’exemple')}
 // Local folders, internal references, contacts and contextual command insertion.
 function webHref(value){try{const u=new URL(String(value||'').trim());return ['https:','http:'].includes(u.protocol)?u.href:''}catch{return ''}}
@@ -3236,7 +3685,7 @@ function openSlash(blockId='',after=false){const p=currentPage();if(!p){openCont
 function openContextMenu(kind='/',context=commandContext()){
  const anchor=context.element||context.returnTo,rect=anchor?.getBoundingClientRect?.()||{left:innerWidth/2-190,top:100,bottom:130};const height=Math.min(540,innerHeight-24),width=Math.min(390,innerWidth-24);const top=Math.max(12,Math.min(rect.bottom+8,innerHeight-height-12)),left=Math.max(12,Math.min(rect.left,innerWidth-width-12));
  slash={...context,kind,query:'',index:0,selectedContacts:[]};
- $('#slash-root').innerHTML=`<div class="slash-menu command-palette" role="dialog" aria-label="${kind==='@'?'Interlocuteurs':'Commandes'}" style="top:${top}px;left:${left}px;width:${width}px;max-height:${height}px"><header><div class="flex between"><p>${kind==='@'?'@ Mentionner un interlocuteur':'/ Commandes'} <span class="command-context">${context.mode==='global'?'Partout dans Repère':context.mode==='text'?'Dans ce champ':'Dans cette note'}</span></p><button class="icon-btn" data-act="close-command" aria-label="Fermer les commandes">${ic('close',15)}</button></div><input id="slash-search" class="input" placeholder="${kind==='@'?'Nom, entreprise, fonction, téléphone, e-mail…':'Action, affaire, lien, réunion…'}" aria-label="Rechercher" aria-controls="slash-items" autocomplete="off"></header><div id="slash-items" class="slash-items" role="listbox"></div><footer>↑ ↓ Choisir · Entrée Valider · Échap Revenir</footer></div>`;
+ $('#slash-root').innerHTML=`<div class="slash-menu command-palette" role="dialog" aria-label="${kind==='@'?'Interlocuteurs':'Commandes'}" style="top:${top}px;left:${left}px;width:${width}px;max-height:${height}px"><header><div class="flex between"><p>${kind==='@'?'@ Mentionner un interlocuteur':'/ Commandes'} <span class="command-context">${context.mode==='global'?'Partout dans Repère':context.mode==='text'?'Dans ce champ':'Dans cette note'}</span></p><button class="icon-btn" data-act="close-command" aria-label="Fermer les commandes">${ic('close',15)}</button></div><input id="slash-search" class="input" placeholder="${kind==='@'?'Nom, entreprise, fonction, téléphone, e-mail…':'Action, affaire, lien, réunion…'}" aria-label="Rechercher" aria-controls="slash-items" autocomplete="off"><\/header><div id="slash-items" class="slash-items" role="listbox"></div><footer>↑ ↓ Choisir · Entrée Valider · Échap Revenir</footer></div>`;
  renderSlashItems();
  $('#slash-search').oninput=e=>{if(!slash)return;slash.query=e.target.value;slash.index=0;renderSlashItems()};
  $('#slash-search').onkeydown=e=>{if(!slash)return;if(!['ArrowDown','ArrowUp','Enter','Escape','Tab'].includes(e.key))return;e.preventDefault();e.stopPropagation();const list=filteredCommands();if(['ArrowDown','ArrowUp'].includes(e.key)){slash.index=list.length?(slash.index+(e.key==='ArrowDown'?1:-1)+list.length)%list.length:0;renderSlashItems();$('#slash-items .active')?.scrollIntoView({block:'nearest'})}else if(e.key==='Enter'){if(slash.kind==='@'&&(e.ctrlKey||e.metaKey)){finishMentions();return}if(list[slash.index])runCommand(list[slash.index].id)}else closeSlash(true)};
@@ -3420,8 +3869,8 @@ $('#import-file').addEventListener('change',async e=>{const file=e.target.files[
 document.addEventListener('toggle',e=>{if(e.target.matches?.('details.checklist')&&e.target.open)resizeAllCheckNotes()},true);
 window.addEventListener('resize',resizeAllCheckNotes);
 window.addEventListener('resize',()=>{if(innerWidth>700)ui.mobileNavOpen=false;applySidebarLayout()});
-window.addEventListener('beforeunload',e=>{if(dirty)persist();if(dirty||storageError||conflict||hasUnexportedChanges()){e.preventDefault();e.returnValue=''}});
-window.addEventListener('storage',e=>{if((e.key===STORE&&e.newValue!==lastRaw)||e.key===null){conflict=true;setSaveState()}if(e.key===EXPORT_STATE){exportState=readExportState();refreshBackupStatus()}});
+window.addEventListener('beforeunload',e=>{if(dirty)persist();if(dirty||storageError||conflict||hasUnexportedChanges()||cloudHasPending()){e.preventDefault();e.returnValue=''}});
+window.addEventListener('storage',e=>{if(cloud.locked)return;if(e.key===EXPORT_STATE){exportState=readExportState();refreshBackupStatus()}});
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'&&dirty)persist()});
 render();
 
@@ -3444,6 +3893,8 @@ document.addEventListener('visibilitychange',()=>{if(document.visibilityState!==
 $('#backup-verify-file').addEventListener('change',async event=>{const file=event.target.files[0];event.target.value='';await verifyBackupFile(file)});
 document.addEventListener('submit',event=>{if(event.target.id==='backup-settings-form'){event.preventDefault();saveBackupSettings()}});
 
+
+cloudInit();
 </script>
 </body>
 </html>

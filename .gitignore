@@ -18,3 +18,9 @@ data/
 Thumbs.db
 node_modules/
 *.log
+
+# Prévisualisation et caches de développement
+preview/
+.openai/
+.firebase/
+__pycache__/
