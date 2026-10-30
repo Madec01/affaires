@@ -2,7 +2,7 @@
 'use strict';
 const CONTEXT_KEYS=['T1_TEM','T1_AT','T2_TEM','T2_AT'];
 const CLOUD_OWNER='uApWq2k3mHNiCymeLpJRA3E0UwJ2', CLOUD_WEB=/^https?:$/.test(location.protocol);
-const VERSION='1.27', STORE=CLOUD_WEB?'repere-affaires-cloud-v1-'+CLOUD_OWNER:'repere-affaires-v1', BACKUP=STORE+'-previous';
+const VERSION='1.28', STORE=CLOUD_WEB?'repere-affaires-cloud-v1-'+CLOUD_OWNER:'repere-affaires-v1', BACKUP=STORE+'-previous';
 /*CLOUD_CORE*/
 /*LOCAL_DB*/
 /*CLOUD_TRANSPORT*/

@@ -1,5 +1,5 @@
 /* Cache only the public application shell. Business data stays in IndexedDB. */
-const VERSION='1.27';
+const VERSION='1.28';
 const BASE=self.registration.scope;
 const PREFIX='repere-shell-'+new URL(BASE).pathname+'-';
 const CACHE=PREFIX+VERSION;

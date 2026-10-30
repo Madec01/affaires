@@ -1,6 +1,6 @@
 # Repère — gestion des affaires
 
-**Version 1.27** · schéma des sauvegardes **13**.
+**Version 1.28** · schéma des sauvegardes **13**.
 
 Repère suit les affaires, projets TR1/TR2 et TEM/AT, actions, demandes hors affaire, interlocuteurs, éléments, références et notes. Les synthèses restent imprimables en PDF et exportables en brouillon e-mail. Sur téléphone (jusqu’à 700 px), une interface dédiée place la todo liste au premier plan ; la présentation PC reste disponible sur écran large.
 
@@ -11,9 +11,12 @@ Repère suit les affaires, projets TR1/TR2 et TEM/AT, actions, demandes hors aff
 
 Le fichier HTML reste autonome pour le mode local. La version connectée charge les SDK officiels Firebase Authentication et Firestore (13.1.0) depuis le CDN Google. Elle requiert un accès réseau pour sa première ouverture et la connexion. Aucun mot de passe ni clé de compte de service n’est inclus dans le dépôt.
 
-## Téléphone — version 1.27
+## Téléphone — version 1.28
 
-- **Aujourd’hui** : actions d’affaires et demandes hors affaire, classées en priorités, relances, échéances du jour, suite et réponses attendues. L’affaire est affichée avant l’action. Les filtres sont regroupés dans un bouton.
+- **Aujourd’hui** : actions prioritaires, section dédiée aux demandes hors affaire, éléments à traiter et échéances à venir. Trois compteurs permettent d’aller directement aux Échéances / Demandes / Éléments. Chaque section affiche d’abord trois lignes, puis un bouton pour voir la suite. L’affaire précède toujours l’intitulé.
+- **Échéances** : actions, demandes, fins de phase, documents, éléments et relances, classés par date. Horizon de 14 jours par défaut, réglable sur 7 ou 30 jours. Un appui ouvre la fiche correspondante. Les retards restent dans les listes de travail.
+- **Éléments à traiter** : contrôles, approbations et signatures mis en avant, y compris les attentes de signature. Une case permet de ne voir que ces contrôles/signatures. Les éléments terminés et non applicables, affaires archivées et projets clos sont exclus. Les éléments non commencés ou à faire des phases futures apparaissent seulement si une échéance ou relance arrive dans les 14 jours ; les suivis déjà engagés restent visibles.
+- Les filtres affaire, tranche, TEM/AT et recherche s’appliquent aux nouvelles sections ; le filtre « Priorité des actions » concerne uniquement les actions et demandes. Ces vues utilisent IndexedDB et ne déclenchent aucun accès Firestore supplémentaire.
 - **Toutes** : actions ouvertes, en attente ou terminées ; filtres par affaire, tranche, TEM/AT, urgence et recherche.
 - **Affaires** : liste compacte ; ouverture sur les actions du projet sélectionné, puis onglets Dossier / Notes. Références MC, OT, ADR, PDS, FEP et régimes filtrées sur le projet, contacts avec liens Appeler / E-mail, SharePoint et Cockpit. Éléments et documents restent accessibles via ⋯.
 - **+** : ajout rapide d’une demande hors affaire, d’une action sur un ou plusieurs projets, ou d’une note à classer. La priorité des demandes conserve les règles existantes. Une durée facultative peut aussi être donnée à une action d’affaire.
@@ -30,7 +33,7 @@ Une mise à jour installable est signalée par **Nouvelle version disponible**. 
 
 ### Essai téléphone
 
-1. Actualiser la version sur **les deux appareils**, vérifier **v1.27** dans ⋯.
+1. Actualiser la version sur **les deux appareils**, vérifier **v1.28** dans ⋯.
 2. Créer une demande hiérarchique de 3 minutes via **+** : elle doit apparaître en priorité. Ajouter un suivi, terminer puis annuler.
 3. Depuis une affaire, créer une action et cocher deux projets : une seule action, visible dans chacun. Filtrer TR1/TR2 et vérifier les couleurs.
 4. Ouvrir Dossier, changer la tranche/projet, contrôler les références et les contacts ; ouvrir une note et tester `/` et `@`.
@@ -163,3 +166,9 @@ node --test tests/*.test.cjs
 Les tests automatisés utilisent des données fictives et un transport simulé. Ils couvrent les conflits, les coupures, les courses entre appareils, les erreurs de stockage, l’isolation de session, les fragments, les sauvegardes et les nombres d’opérations. Un banc de 8 vérifications IndexedDB a également été exécuté dans Chrome, ainsi qu’une création de capture, un enregistrement manuel et un rechargement de l’application. Les tests v1.26 simulent le minuteur de 3 minutes, sa remise à zéro, le bouton manuel, les événements de visibilité/réseau, la conservation du délai au rechargement et deux appareils authentifiés avec réception automatique sans lecture supplémentaire au repos. Ils ne prouvent pas que les réglages de votre console Firebase sont publiés : le test réel ci-dessus reste nécessaire.
 
 Les tests v1.27 couvrent les priorités mobiles, la sélection multiple TR1/TR2, la conservation des durées lors des sauvegardes, les références par projet, les filtres sans modification métier et le cache public du service worker. La vérification visuelle utilise une fenêtre intégrée de 320/390/700 px et une largeur PC de 1200 px, avec données fictives. L’installation native iOS/Android et le rechargement hors ligne avec votre compte doivent être vérifiés sur vos appareils réels ; le serveur local de prévisualisation ne fournit pas HTTPS.
+
+### Vérifications v1.28
+
+76 tests automatisés réussis : tri des contrôles et signatures, phases et périmètres actifs, exclusion des états finaux et non applicables, échéances aux limites des horizons, absence de doublon pour une action commune, demandes séparées et aucun changement des données par les filtres. Sur l’interface mobile, un plan d’actions fictif a été passé « À approuver » avec échéance au lendemain : il remonte dans les contrôles et dans l’agenda, et s’ouvre depuis l’accueil. Filtre des contrôles et absence de débordement vérifiés à 320 px.
+
+À tester : ouvrir les trois compteurs de l’accueil ; sélectionner 7/14/30 jours ; passer un élément à contrôler/signature puis à son état final ; vérifier son apparition puis sa disparition du travail restant. Pour une application installée, utiliser « Nouvelle version disponible → Mettre à jour l’application », puis vérifier v1.28.

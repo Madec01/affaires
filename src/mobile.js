@@ -1,5 +1,5 @@
 /* Phone workspace: local views over the existing data and save/sync pipeline. */
-const mobileState={homeLimit:5,filters:{},lastWidth:null};
+const mobileState={homeLimit:5,homeLimits:{},agendaDays:14,reviewOnly:false,filters:{},lastWidth:null};
 function isPhone(){return innerWidth<=700}
 function mobileButton(label,action,icon='plus',attrs='',primary=false){return '<button type="button" class="btn '+(primary?'primary':'')+'" data-mobile="'+action+'" '+attrs+'>'+ic(icon,18)+esc(label)+'</button>'}
 function mobileTopbar(){
@@ -26,16 +26,73 @@ function mobileTaskCard(t){
  return '<article class="m-task scope-frame '+(t.status==='done'?'m-completed':'')+'" data-tranche="'+esc(request?'':itemTranche(t))+'" data-attention="'+group+'"><button type="button" class="m-task-check" data-mobile="toggle-task" data-id="'+t.id+'" aria-pressed="'+(t.status==='done')+'" aria-label="'+(t.status==='done'?'Rouvrir':'Terminer')+' : '+esc(textLabel(t.title))+'">'+(t.status==='done'?ic('check',19):'<span></span>')+'</button><button type="button" class="m-task-body" data-mobile="task" data-id="'+t.id+'"><strong class="m-task-owner">'+esc(request?(t.requestContext||'Hors affaire')+(t.requestSource==='hierarchy'?' · demande hiérarchique':''):taskOwnerLabel(t))+'</strong><span class="m-task-title">'+esc(textLabel(t.title))+'</span><span class="m-task-meta">'+contexts+'<span class="m-due">'+esc(mobileDue(t))+'</span>'+(duration?'<span>· '+esc(duration)+'</span>':'')+(t.priority==='high'&&t.status!=='done'?'<strong class="m-urgent">URGENT</strong>':'')+'</span>'+(t.status==='waiting'?'<span class="m-task-state">En attente'+(t.contact?' · '+esc(t.contact):'')+'</span>':t.status==='doing'?'<span class="m-task-state">En cours</span>':'')+'</button></article>';
 }
 function mobileTaskSection(title,items,limit=Infinity,scope=''){if(!items.length)return '';return '<section class="m-task-section"><h2>'+esc(title)+' <span>'+items.length+'</span></h2>'+items.slice(0,limit).map(mobileTaskCard).join('')+(items.length>limit?'<button class="btn m-full" data-mobile="show-more" data-scope="'+scope+'">Voir les '+(items.length-limit)+' autres</button>':'')+'</section>'}
+function mobileHomeContextKeys(item,f={}){const p=project(item.projectId);return p&&!p.archived?itemContexts(item).filter(k=>contextMatches(k,f)&&runFor(p,k)?.phase!=='clos'):[]}
+function mobileHomeRecordMatches(item,f,extra=''){
+ const p=project(item.projectId);if(!p||p.archived||f.project==='__requests'||f.project&&!['__affairs',p.id].includes(f.project)||!mobileHomeContextKeys(item,f).length)return false;
+ return normalize([p.title,p.reference,item.title,item.reference,item.code,item.notes,extra].join(' ')).includes(normalize(f.query));
+}
+function mobileHomeElements(f={}){
+ const soon=addDays(14);
+ return db.elements.filter(e=>{
+  const tone=elementStateTone(e);if(['done','na'].includes(tone)||!mobileHomeRecordMatches(e,f,companyById(e.companyId)?.name||''))return false;
+  // Untouched elements from future phases do not flood today's workload.
+  return !['empty','todo'].includes(tone)||e.phase==='transverse'||mobileHomeContextKeys(e,f).some(k=>runFor(project(e.projectId),k).phase===e.phase)||e.due&&e.due<=soon||e.followUp&&e.followUp<=soon;
+ }).sort((a,b)=>mobileElementRank(a)-mobileElementRank(b)||(mobileElementDate(a)||'9999').localeCompare(mobileElementDate(b)||'9999')||a.title.localeCompare(b.title,'fr'));
+}
+function mobileElementNeedsReview(e){return !['empty','done','na'].includes(elementState(e).kind)&&(elementStateTone(e)==='review'||/signatur/.test(normalize(elementState(e).label)))}
+function mobileElementDate(e){return [e.due,e.followUp].filter(Boolean).sort()[0]||''}
+function mobileElementRank(e){const d=mobileElementDate(e);return d&&d<isoToday()?0:mobileElementNeedsReview(e)?1:d&&d===isoToday()?2:elementStateTone(e)==='empty'?5:elementStateTone(e)==='waiting'?4:3}
+function mobileHomeAgenda(f={},days=14){
+ const today=isoToday(),limit=addDays(days),events=[];
+ const add=(entry)=>{if(entry.date&&entry.date>=today&&entry.date<=limit)events.push(entry)};
+ for(const p of activeProjects()){
+  for(const r of runsFor(p))if(r.phase!=='clos'&&contextMatches(r.contextKey,f)&&mobileHomeRecordMatches({projectId:p.id,contextKeys:[r.contextKey],title:p.title},f))add({key:'project:'+p.id+':'+r.contextKey,date:r.due,title:p.title,label:'Fin de '+PHASES[r.phase].toLowerCase(),kind:'Phase',contextKeys:[r.contextKey],act:'project',id:p.id,context:r.contextKey});
+ }
+ for(const t of openTasks()){
+  if(!taskMatches(t,{...f,status:'open'})||!isRequest(t)&&!mobileHomeContextKeys(t,f).length)continue;
+  const deadline=isRequest(t)?requestDeadline(t):null,date=deadline===null?t.due:localDateString(new Date(deadline)),keys=isRequest(t)?[]:mobileHomeContextKeys(t,f);
+  add({key:'task:'+t.id,date,title:taskOwnerLabel(t),label:t.title,kind:isRequest(t)?'Demande':'Action',contextKeys:keys,mobile:'task',id:t.id});
+  if(t.status==='waiting'&&t.followUp)add({key:'follow-task:'+t.id,date:t.followUp,title:taskOwnerLabel(t),label:t.title,kind:'Relance',contextKeys:keys,mobile:'task',id:t.id});
+ }
+ for(const e of db.elements){
+  if(['done','na'].includes(elementState(e).kind)||!mobileHomeRecordMatches(e,f,companyById(e.companyId)?.name||''))continue;
+  const entry={title:projectTitle(e.projectId),label:e.title,kind:'Élément · '+elementState(e).label,contextKeys:mobileHomeContextKeys(e,f),mobile:'element',id:e.id};
+  add({...entry,key:'element:'+e.id,date:e.due});
+  if(e.followUp)add({...entry,key:'follow-element:'+e.id,date:e.followUp,kind:'Relance · élément'});
+ }
+ for(const d of db.documents)if(!['ok','na'].includes(d.status)&&mobileHomeRecordMatches(d,f))add({key:'document:'+d.id,date:d.due,title:projectTitle(d.projectId),label:d.title,kind:'Document',contextKeys:mobileHomeContextKeys(d,f),act:'edit-document',id:d.id});
+ return events.sort((a,b)=>a.date.localeCompare(b.date)||a.title.localeCompare(b.title,'fr')||a.key.localeCompare(b.key));
+}
+function mobileElementCard(e){const state=elementState(e),tone=mobileElementNeedsReview(e)?'review':elementStateTone(e),company=companyById(e.companyId)?.name,late=e.due&&e.due<isoToday();return '<button type="button" class="m-element scope-frame" data-tranche="'+esc(elementTranche(e))+'" data-mobile="element" data-id="'+e.id+'"><strong class="m-task-owner">'+esc(projectTitle(e.projectId))+'</strong><span class="m-task-title">'+esc(e.title)+'</span><span class="m-element-state v110-tone-'+tone+'">'+esc(state.label)+'</span><span class="m-task-meta">'+contextBadges(e.contextKeys)+'<span>'+esc(ELEMENT_PHASES[e.phase]||e.phase)+'</span>'+(company?'<span>'+esc(company)+'</span>':'')+(e.reference?'<span>Réf. '+esc(e.reference)+'</span>':'')+'</span>'+((e.due||e.followUp)?'<span class="m-element-dates">'+(e.due?'<span class="'+(late?'m-urgent':'')+'">'+(late?'En retard · ':'Échéance · ')+fmt(e.due)+'</span>':'')+(e.followUp?'<span class="'+(e.followUp<=isoToday()?'m-urgent':'')+'">Relance · '+fmt(e.followUp)+'</span>':'')+'</span>':'')+'</button>'}
+function mobileAgendaCard(e){const next=addDays(1),day=e.date===isoToday()?'Aujourd’hui':e.date===next?'Demain':fmt(e.date);return '<button type="button" class="m-agenda scope-frame" data-tranche="'+esc(trancheFromContexts(e.contextKeys))+'" '+(e.mobile?'data-mobile="'+e.mobile+'"':'data-act="'+e.act+'"')+' data-id="'+e.id+'"'+(e.context?' data-context="'+e.context+'"':'')+'><time datetime="'+e.date+'">'+esc(day)+'</time><span><strong class="m-task-owner">'+esc(textLabel(e.title))+'</strong><span class="m-agenda-title">'+esc(textLabel(e.label))+'</span><small>'+esc(e.kind)+'</small><span class="m-task-meta">'+contextBadges(e.contextKeys)+'</span></span>'+ic('chevron',16)+'</button>'}
+function mobileHomeSection(key,title,items,row,emptyText,extra=''){
+ const limit=mobileState.homeLimits[key]||3;
+ return '<section class="m-task-section m-home-section" aria-labelledby="m-home-'+key+'"><h2 id="m-home-'+key+'" tabindex="-1">'+esc(title)+' <span>'+items.length+'</span></h2>'+extra+(items.length?items.slice(0,limit).map(row).join(''):'<p class="m-home-empty">'+esc(emptyText)+'</p>')+(items.length>limit?'<button class="btn m-full" data-mobile="home-more" data-section="'+key+'">Voir les '+(items.length-limit)+' autres</button>':'')+'</section>';
+}
+function mobileOpenElement(id){const e=db.elements.find(e=>e.id===id);if(!e)return;commandDialog(()=>elementForm(id))}
 function renderMobileHome(){
- const f=filtersFor('mobileHome'),list=openTasks().filter(t=>taskMatches(t,{...f,status:'open'})).sort(taskSort),groups={urgent:[],follow:[],today:[],next:[],waiting:[]};for(const t of list)groups[mobileTaskGroup(t)].push(t);
- return '<div class="m-workspace">'+mobileHeader('Aujourd’hui',list.length+' action'+(list.length>1?'s':'')+' ouverte'+(list.length>1?'s':''),'mobileHome')+mobileTaskSection('À traiter en priorité',groups.urgent)+mobileTaskSection('Relances à faire',groups.follow)+mobileTaskSection('Pour aujourd’hui',groups.today)+mobileTaskSection('À faire ensuite',groups.next,mobileState.homeLimit,'home')+(groups.waiting.length?'<details class="m-fold"><summary>Réponses attendues <span>'+groups.waiting.length+'</span></summary>'+groups.waiting.map(mobileTaskCard).join('')+'</details>':'')+(!list.length?'<div class="m-empty">'+ic('check',30)+'<h2>Aucune action à traiter</h2><p>'+(Object.values(f).some(Boolean)?'Modifiez vos filtres pour retrouver les autres actions.':'Ajoutez une demande ou une action avec le bouton +.')+'</p></div>':'')+(db.captures.length?'<button class="m-inbox" data-act="nav" data-view="inbox">'+ic('inbox',19)+'<span>'+db.captures.length+' note(s) à classer</span>'+ic('chevron',16)+'</button>':'')+'</div>';
+ const f=filtersFor('mobileHome'),all=openTasks().filter(t=>taskMatches(t,{...f,status:'open'})&&(isRequest(t)||mobileHomeContextKeys(t,f).length)),requests=all.filter(isRequest).sort(requestSort),list=all.filter(t=>!isRequest(t)).sort(taskSort),elements=mobileHomeElements(f),agenda=mobileHomeAgenda(f,mobileState.agendaDays),groups={urgent:[],follow:[],today:[],next:[],waiting:[]};for(const t of list)groups[mobileTaskGroup(t)].push(t);
+ const shortcuts='<nav class="m-home-shortcuts" aria-label="Accès rapides de l’accueil">'+[['dates','Échéances',agenda.length,'calendar'],['requests','Demandes',requests.length,'inbox'],['elements','Éléments',elements.length,'check']].map(([key,label,count,icon])=>'<button data-mobile="home-jump" data-section="'+key+'">'+ic(icon,18)+'<strong>'+count+'</strong><span>'+label+'</span></button>').join('')+'</nav>';
+ const datesChoice='<label class="m-horizon">Horizon<select data-mobile-horizon aria-label="Horizon des échéances">'+[7,14,30].map(n=>'<option value="'+n+'" '+(mobileState.agendaDays===n?'selected':'')+'>'+n+' jours</option>').join('')+'</select></label>';
+ const reviewCount=elements.filter(mobileElementNeedsReview).length,elementChoice='<label class="m-review-choice"><input type="checkbox" data-mobile-review '+(mobileState.reviewOnly?'checked':'')+'> À contrôler / signer uniquement ('+reviewCount+')</label>';
+ return '<div class="m-workspace">'+mobileHeader('Aujourd’hui',all.length+' action(s) ouverte(s) · '+elements.length+' élément(s)','mobileHome')+shortcuts+
+ (groups.urgent.length?mobileHomeSection('urgent','Actions prioritaires',groups.urgent,mobileTaskCard,''):'')+
+ mobileHomeSection('requests','Demandes hors affaire',requests,mobileTaskCard,'Aucune demande ouverte dans ce filtre.')+
+ mobileHomeSection('elements','Éléments à traiter',mobileState.reviewOnly?elements.filter(mobileElementNeedsReview):elements,mobileElementCard,'Aucun élément à traiter dans cette vue.',elementChoice)+
+ mobileHomeSection('dates','Échéances à venir',agenda,mobileAgendaCard,'Aucune échéance sur les '+mobileState.agendaDays+' prochains jours.',datesChoice)+
+ (groups.follow.length?mobileHomeSection('follow','Relances à faire',groups.follow,mobileTaskCard,''):'')+
+ (groups.today.length?mobileHomeSection('today','Pour aujourd’hui',groups.today,mobileTaskCard,''):'')+
+ mobileTaskSection('À faire ensuite',groups.next,mobileState.homeLimit,'home')+
+ (groups.waiting.length?'<details class="m-fold"><summary>Réponses attendues <span>'+groups.waiting.length+'</span></summary>'+groups.waiting.map(mobileTaskCard).join('')+'</details>':'')+
+ (!all.length&&!elements.length&&!agenda.length?'<p class="m-home-empty">Aucune action à traiter dans ce périmètre.</p>':'')+
+ (db.captures.length?'<button class="m-inbox" data-act="nav" data-view="inbox">'+ic('inbox',19)+'<span>'+db.captures.length+' note(s) à classer</span>'+ic('chevron',16)+'</button>':'')+'</div>';
 }
 function renderMobileTasks(scope='mobileTasks',p=null){
  const f=filtersFor(scope),waiting=scope==='mobileWaiting',list=(p?ptasks(p.id,p.contextKey):db.tasks.filter(taskActive)).filter(t=>taskMatches(t,{...f,...(waiting?{status:'waiting'}:{})})).sort(taskSort),status=f.status||'open';
  return '<div class="m-workspace">'+mobileHeader(p?'Actions':waiting?'Réponses attendues':'Toutes les actions',list.length+' résultat'+(list.length>1?'s':''),scope)+(!waiting?'<div class="m-segments" aria-label="Statut des actions">'+[['open','Ouvertes'],['waiting','En attente'],['done','Terminées']].map(([key,label])=>'<button data-mobile="task-filter" data-scope="'+scope+'" data-status="'+key+'" aria-pressed="'+(status===key)+'">'+label+'</button>').join('')+'</div>':'')+(list.length?list.map(mobileTaskCard).join(''):'<p class="m-empty">Aucune action dans cette vue.</p>')+'</div>';
 }
 function mobileFilters(scope){
- const affair=['affairs','archives'].includes(scope),f=filtersFor(scope),fieldSet=filterQuery(scope,affair?'Affaire, référence…':'Action, affaire, interlocuteur…')+(scope==='mobileProject'?'':scopeFilters(scope))+(affair?filterSelect(scope,'phase','Phase',[['','Toutes'],...Object.entries(PHASES)]):(scope==='mobileProject'?'':filterSelect(scope,'project','Affaire',[['','Toutes'],['__requests','Hors affaire'],['__affairs','Actions d’affaires'],...db.projects.filter(p=>!p.archived).map(p=>[p.id,p.title])]))+filterSelect(scope,'priority','Priorité',[['','Toutes'],['high','Urgentes']]));
+ const affair=['affairs','archives'].includes(scope),f=filtersFor(scope),fieldSet=filterQuery(scope,affair?'Affaire, référence…':'Action, affaire, interlocuteur…')+(scope==='mobileProject'?'':scopeFilters(scope))+(affair?filterSelect(scope,'phase','Phase',[['','Toutes'],...Object.entries(PHASES)]):(scope==='mobileProject'?'':filterSelect(scope,'project','Affaire',[['','Toutes'],['__requests','Hors affaire'],['__affairs','Actions d’affaires'],...db.projects.filter(p=>!p.archived).map(p=>[p.id,p.title])]))+filterSelect(scope,'priority',scope==='mobileHome'?'Priorité des actions':'Priorité',[['','Toutes'],['high','Urgentes']]));
  // Modal filters are committed together; typing does not rebuild the dialog or call Firebase.
  const fields=fieldSet.replace(/data-filter-scope="[^"]+" /g,'').replace(/data-filter-key="([^"]+)"/g,'name="$1"');
  modal('Filtres','Sur les données de cet appareil',dialogBody('<div class="m-filter-form">'+fields+'</div>',actions('Appliquer',mobileButton('Effacer','clear-filters','close','data-scope="'+scope+'"'))),v=>{ui.filters[scope]={...f,...v};closeModal();render()});
@@ -92,6 +149,9 @@ document.addEventListener('click',e=>{
  if(action==='more')mobileMore();
  if(action==='theme'){toggleTheme();mobileMore()}
  if(action==='task')mobileTaskDetail(id);
+ if(action==='element')mobileOpenElement(id);
+ if(action==='home-jump'){const heading=document.getElementById('m-home-'+b.dataset.section);heading?.scrollIntoView({block:'start'});heading?.focus({preventScroll:true})}
+ if(action==='home-more'){const key=b.dataset.section;mobileState.homeLimits[key]=(mobileState.homeLimits[key]||3)+10;render()}
  if(action==='toggle-task')mobileToggleTask(id);
  if(action==='filters')mobileFilters(b.dataset.scope);
  if(action==='clear-filters'){ui.filters[b.dataset.scope]={};closeModal();render()}
@@ -104,3 +164,5 @@ document.addEventListener('click',e=>{
 document.addEventListener('change',e=>{if(!e.target.matches?.('[data-mobile-context]')||cloud.locked)return;ui.contextKey=e.target.value;ui.tranche=contextTranche(ui.contextKey);ui.pageId='';render()});
 window.addEventListener('resize',()=>{const phone=isPhone();if(mobileState.lastWidth===null){mobileState.lastWidth=phone;return}if(phone!==mobileState.lastWidth){mobileState.lastWidth=phone;if(!cloud.locked)render()}});
 if(typeof visualViewport!=='undefined'){const keyboard=()=>document.body.classList.toggle('m-keyboard',isPhone()&&visualViewport.height<innerHeight*.75);visualViewport.addEventListener('resize',keyboard)}
+
+document.addEventListener('change',e=>{if(cloud.locked)return;if(e.target.matches?.('[data-mobile-horizon]')){const days=Number(e.target.value);if([7,14,30].includes(days)){mobileState.agendaDays=days;mobileState.homeLimits.dates=3;render();$('#m-home-dates')?.scrollIntoView({block:'start'})}}if(e.target.matches?.('[data-mobile-review]')){mobileState.reviewOnly=e.target.checked;mobileState.homeLimits.elements=3;render();$('#m-home-elements')?.scrollIntoView({block:'start'})}});
